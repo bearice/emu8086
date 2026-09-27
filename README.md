@@ -4,6 +4,14 @@ An Intel 8086 emulator, assembler and debugger that runs entirely in the browser
 No backend: assemble DOS `.COM`-style programs in the editor and watch them execute
 against a simulated 1 MiB address space and an 80×25 CGA text display.
 
+The CPU interpreter is implemented in Rust and compiled to WebAssembly. The JavaScript
+`Machine` remains responsible for loading `.COM` programs, keyboard input, and the text
+screen; the assembler, disassembler, and debugger UI remain JavaScript modules.
+
+Build requirements: Node.js/npm, Rust/Cargo, and the Rust target `wasm32v1-none`
+(`rustup target add wasm32v1-none`). The dev, build, and test scripts compile the WASM
+kernel automatically.
+
 ```
 npm run dev     # dev server on 0.0.0.0:8080
 npm test        # CPU + assembler + disassembler smoke tests (node)
@@ -14,7 +22,8 @@ npm run build   # static production build into dist/
 
 | file | what it is |
 | --- | --- |
-| `src/cpu.js` | the CPU: ModR/M decoding, full flag semantics, ALU, string ops, interrupts |
+| `wasm/src/lib.rs` | Rust CPU kernel: ModR/M decoding, flag semantics, ALU, string ops, interrupts |
+| `src/cpu.js` | JavaScript adapter for WASM registers, memory, stepping, and host I/O |
 | `src/asm.js` | two-pass (fixpoint) assembler with labels, `equ`, `db/dw`, `dup`, expressions |
 | `src/disasm.js` | disassembler used by the debugger view |
 | `src/machine.js` | CPU + text screen + keyboard + `.COM` loader (loads at `0100:0100`) |

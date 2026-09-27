@@ -15,6 +15,7 @@ export class Machine {
       onInput: (peek) => (this.kbd.length ? (peek ? this.kbd[0] : this.kbd.shift()) : -1),
     });
     this.breakpoints = new Set();
+    this.syncedBreakpoints = new Set();
     this.clear();
     this.loaded = null;
   }
@@ -79,11 +80,23 @@ export class Machine {
   // run up to n instructions; stops at breakpoint / halt / waiting-on-input
   run(n) {
     const cpu = this.cpu;
-    for (let i = 0; i < n; i++) {
+    for (const ip of this.breakpoints) {
+      if (!this.syncedBreakpoints.has(ip)) cpu.setBreakpoint(ip, true);
+    }
+    for (const ip of this.syncedBreakpoints) {
+      if (!this.breakpoints.has(ip)) cpu.setBreakpoint(ip, false);
+    }
+    this.syncedBreakpoints = new Set(this.breakpoints);
+
+    let remaining = n;
+    while (remaining > 0) {
       if (cpu.halted) return 'halted';
-      cpu.step();
-      if (cpu.waiting) return 'input';
-      if (this.breakpoints.has(cpu.ip)) return 'breakpoint';
+      const status = cpu.run(remaining);
+      remaining -= cpu.lastRunCount;
+      if (status === 1) return 'halted';
+      if (status === 2) return 'input';
+      if (status === 3) return 'breakpoint';
+      if (status === 0 || cpu.lastRunCount === 0) break;
     }
     return cpu.halted ? 'halted' : 'running';
   }

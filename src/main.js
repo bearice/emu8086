@@ -1,7 +1,8 @@
 import { assemble } from './asm.js';
 import { disasm } from './disasm.js';
 import { Machine, VRAM, COLS, ROWS, LOAD_SEG } from './machine.js';
-import { R, S } from './cpu.js';
+import { initializeCPU, R, S } from './cpu.js';
+import wasmUrl from './wasm/kernel.wasm?url';
 import { SAMPLES } from './samples.js';
 
 const CGA = ['#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa', '#aa5500', '#aaaaaa',
@@ -70,6 +71,9 @@ document.querySelector('#app').innerHTML = `
 </main>`;
 
 const $ = (id) => document.getElementById(id);
+const wasmResponse = await fetch(wasmUrl);
+if (!wasmResponse.ok) throw new Error(`failed to load WASM CPU (${wasmResponse.status})`);
+await initializeCPU(await wasmResponse.arrayBuffer());
 const machine = new Machine();
 const cpu = machine.cpu;
 

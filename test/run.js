@@ -1,7 +1,10 @@
 import { assemble } from '../src/asm.js';
-import { CPU, R, S } from '../src/cpu.js';
+import { CPU, initializeCPU, R, S } from '../src/cpu.js';
 import { disasm } from '../src/disasm.js';
 import { SAMPLES } from '../src/samples.js';
+import { readFile } from 'node:fs/promises';
+
+await initializeCPU(await readFile(new URL('../src/wasm/kernel.wasm', import.meta.url)));
 
 function run(code, input = '') {
   const res = assemble(code);
