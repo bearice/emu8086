@@ -3,6 +3,7 @@ import { disasm } from './disasm.js';
 import { Machine, VRAM, COLS, ROWS, LOAD_SEG } from './machine.js';
 import { initializeCPU, R, S } from './cpu.js';
 import wasmUrl from './wasm/kernel.wasm?url';
+import msdos5ImageUrl from '../msdos5.img?url';
 import { SAMPLES } from './samples.js';
 
 const CGA = ['#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa', '#aa5500', '#aaaaaa',
@@ -17,6 +18,13 @@ document.querySelector('#app').innerHTML = `
   <div class="toolbar">
     <select id="samples" title="Load an example"></select>
     <button id="build" class="primary">Assemble &amp; Run</button>
+    <button id="bootmsdos">Boot MS-DOS 5.0</button>
+    <button id="bootfloppy">Open floppy image</button>
+    <input id="floppyFile" type="file" accept=".img,.ima,.dsk,application/octet-stream" hidden />
+    <button id="savefloppy" hidden disabled>Save floppy image</button>
+    <button id="opendisk">Open hard disk image</button>
+    <input id="hardDiskFile" type="file" accept=".img,.hdd,.raw,application/octet-stream" hidden />
+    <button id="saveharddisk" hidden disabled>Save hard disk image</button>
     <button id="runpause">Run</button>
     <button id="step">Step</button>
     <button id="reset">Reset</button>
@@ -121,13 +129,15 @@ setInterval(() => { blink = !blink; drawScreen(); }, 400);
 
 function drawScreen() {
   const m = cpu.mem;
+  const page = m[0x462] & 7;
+  const pageBase = VRAM + page * 0x1000;
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.font = `${CH - 2}px "DejaVu Sans Mono", "Courier New", monospace`;
   ctx.textBaseline = 'top';
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
-      const i = VRAM + (y * COLS + x) * 2;
+      const i = pageBase + (y * COLS + x) * 2;
       const ch = m[i], at = m[i + 1];
       const bg = CGA[(at >> 4) & 7], fg = CGA[at & 0x0f];
       if (bg !== '#000000') { ctx.fillStyle = bg; ctx.fillRect(x * CW, y * CH, CW, CH); }
@@ -138,7 +148,8 @@ function drawScreen() {
     }
   }
   if (blink && document.activeElement === canvas) {
-    const cx = machine.cursor % COLS, cy = Math.floor(machine.cursor / COLS);
+    const cursor = cpu.rd16(0x450 + page * 2);
+    const cx = cursor & 0xff, cy = cursor >> 8;
     ctx.fillStyle = '#c9d1ff';
     ctx.fillRect(cx * CW, cy * CH + CH - 3, CW, 2);
   }
@@ -159,7 +170,23 @@ canvas.addEventListener('keydown', (e) => {
   else if (e.key === 'Backspace') c = 8;
   else if (e.key === 'Tab') c = 9;
   else if (e.key === 'Escape') c = 27;
-  if (c >= 0) { e.preventDefault(); machine.keyPress(c); if (running) {} else if (cpu.waiting) { running = true; setStatus('running'); } }
+  const scans = {
+    Enter: 0x1c, Backspace: 0x0e, Tab: 0x0f, Escape: 0x01,
+    ArrowUp: 0x48, ArrowDown: 0x50, ArrowLeft: 0x4b, ArrowRight: 0x4d,
+    Home: 0x47, End: 0x4f, PageUp: 0x49, PageDown: 0x51, Insert: 0x52, Delete: 0x53,
+    F1: 0x3b, F2: 0x3c, F3: 0x3d, F4: 0x3e, F5: 0x3f, F6: 0x40,
+    F7: 0x41, F8: 0x42, F9: 0x43, F10: 0x44, F11: 0x57, F12: 0x58,
+    a: 0x1e, b: 0x30, c: 0x2e, d: 0x20, e: 0x12, f: 0x21, g: 0x22, h: 0x23, i: 0x17,
+    j: 0x24, k: 0x25, l: 0x26, m: 0x32, n: 0x31, o: 0x18, p: 0x19, q: 0x10, r: 0x13,
+    s: 0x1f, t: 0x14, u: 0x16, v: 0x2f, w: 0x11, x: 0x2d, y: 0x15, z: 0x2c,
+    '1': 0x02, '2': 0x03, '3': 0x04, '4': 0x05, '5': 0x06, '6': 0x07,
+    '7': 0x08, '8': 0x09, '9': 0x0a, '0': 0x0b,
+  };
+  if (c >= 0 || scans[e.key]) {
+    e.preventDefault();
+    machine.keyPress(c < 0 ? 0 : c, scans[e.key.toLowerCase()] || scans[e.key] || 0);
+    if (!running && cpu.waiting) { running = true; setStatus('running'); }
+  }
 });
 
 // ---------- registers ----------
@@ -310,9 +337,76 @@ function focusLine(n) {
 function refresh() {
   updateRegs(); updateDisasm(); updateMem(); drawScreen();
   $('runpause').textContent = running ? 'Pause' : 'Run';
+  $('savefloppy').hidden = !machine.floppyImage;
+  $('savefloppy').disabled = !machine.diskDirty;
+  $('saveharddisk').hidden = !machine.hardDiskAttached;
+  $('saveharddisk').disabled = !machine.hardDiskDirty;
 }
 
 $('build').onclick = () => build(true);
+$('bootfloppy').onclick = () => $('floppyFile').click();
+$('opendisk').onclick = () => $('hardDiskFile').click();
+function startFloppyImage(image, name) {
+  const geometry = machine.bootFloppy(image);
+  machine.floppyName = name;
+  symbolAddrs.clear();
+  $('asm-info').textContent = `${name} · ${geometry.cylinders} cylinders, ${geometry.heads} heads, ${geometry.sectorsPerTrack} sectors/track`;
+  running = true;
+  setStatus(`booting ${name}`, 'ok');
+  canvas.focus();
+  refresh();
+}
+$('bootmsdos').onclick = async () => {
+  try {
+    const response = await fetch(msdos5ImageUrl);
+    if (!response.ok) throw new Error(`could not load bundled MS-DOS image (${response.status})`);
+    startFloppyImage(new Uint8Array(await response.arrayBuffer()), 'msdos5.img');
+  } catch (error) {
+    setStatus(error.message || String(error), 'bad');
+  }
+};
+$('floppyFile').addEventListener('change', async () => {
+  const file = $('floppyFile').files?.[0];
+  if (!file) return;
+  try {
+    startFloppyImage(new Uint8Array(await file.arrayBuffer()), file.name);
+  } catch (error) {
+    setStatus(error.message || String(error), 'bad');
+  } finally {
+    $('floppyFile').value = '';
+  }
+});
+$('hardDiskFile').addEventListener('change', async () => {
+  const file = $('hardDiskFile').files?.[0];
+  if (!file) return;
+  try {
+    const geometry = machine.attachHardDisk(new Uint8Array(await file.arrayBuffer()), file.name);
+    $('asm-info').textContent = `${file.name} · ${geometry.cylinders} cylinders, ${geometry.heads} heads, ${geometry.sectorsPerTrack} sectors/track`;
+    setStatus(`attached ${file.name}`, 'ok');
+    refresh();
+  } catch (error) {
+    setStatus(error.message || String(error), 'bad');
+  } finally {
+    $('hardDiskFile').value = '';
+  }
+});
+function saveDiskImage(drive) {
+  const disk = drive === 0 ? machine.floppyDisk : machine.hardDisk;
+  if (!disk?.dirty) return;
+  const blob = new Blob([disk.bytes], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = drive === 0
+    ? (machine.floppyName || 'floppy.img')
+    : (machine.hardDiskName || 'harddisk.img');
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  machine.markDiskSaved(drive);
+  refresh();
+}
+$('savefloppy').onclick = () => saveDiskImage(0);
+$('saveharddisk').onclick = () => saveDiskImage(0x80);
 $('step').onclick = () => { running = false; machine.step(); afterStop(); refresh(); };
 $('reset').onclick = () => { running = false; machine.reload(); setStatus('reset'); refresh(); };
 $('runpause').onclick = () => {

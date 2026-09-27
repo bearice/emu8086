@@ -10,6 +10,9 @@ impl Core {
     }
 
     pub(crate) fn string_op(&mut self, op: u8, rep: u8) {
+        if rep != REP_PREFIX_NONE && self.r[CX] == 0 {
+            return;
+        }
         let wide = op & OPCODE_WIDTH_BIT != 0;
         let delta: i32 =
             (if self.flag(DF) { -1 } else { 1 }) * if wide { STACK_SLOT_BYTES as i32 } else { 1 };
@@ -84,9 +87,6 @@ impl Core {
             _ => (),
         }
         if rep == 0 {
-            return;
-        }
-        if self.r[CX] == 0 {
             return;
         }
         self.r[CX] = self.r[CX].wrapping_sub(1);

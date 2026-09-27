@@ -51,6 +51,30 @@ pub extern "C" fn set_flags(value: u32) {
 
 #[no_mangle]
 #[allow(clippy::missing_safety_doc)]
+pub extern "C" fn set_dos_compat_mode(enabled: u32) {
+    state().dos_compat_mode = (enabled != 0) as u32;
+}
+
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub extern "C" fn set_floppy_geometry(cylinders: u32, heads: u32, sectors_per_track: u32) {
+    let c = state();
+    c.floppy_cylinders = cylinders as u16;
+    c.floppy_heads = heads as u16;
+    c.floppy_sectors_per_track = sectors_per_track as u16;
+}
+
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub extern "C" fn set_hard_disk_geometry(cylinders: u32, heads: u32, sectors_per_track: u32) {
+    let c = state();
+    c.hard_disk_cylinders = cylinders as u16;
+    c.hard_disk_heads = heads as u16;
+    c.hard_disk_sectors_per_track = sectors_per_track as u16;
+}
+
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
 pub extern "C" fn get_cycles() -> u32 {
     state().cycles
 }

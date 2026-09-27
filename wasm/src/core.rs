@@ -16,6 +16,15 @@ pub(crate) struct Core {
     pub(crate) s: [u16; SEGMENT_REGISTER_COUNT],
     pub(crate) ip: u16,
     pub(crate) flags: u16,
+    pub(crate) dos_compat_mode: u32,
+    pub(crate) floppy_cylinders: u16,
+    pub(crate) floppy_heads: u16,
+    pub(crate) floppy_sectors_per_track: u16,
+    pub(crate) hard_disk_cylinders: u16,
+    pub(crate) hard_disk_heads: u16,
+    pub(crate) hard_disk_sectors_per_track: u16,
+    pub(crate) floppy_last_disk_status: u8,
+    pub(crate) hard_disk_last_status: u8,
     pub(crate) halted: u32,
     pub(crate) invalid_opcode: u32,
     pub(crate) exited: u32,
@@ -42,6 +51,15 @@ impl Core {
             s: [0; SEGMENT_REGISTER_COUNT],
             ip: 0,
             flags: IF,
+            dos_compat_mode: 1,
+            floppy_cylinders: 0,
+            floppy_heads: 0,
+            floppy_sectors_per_track: 0,
+            hard_disk_cylinders: 0,
+            hard_disk_heads: 0,
+            hard_disk_sectors_per_track: 0,
+            floppy_last_disk_status: 0,
+            hard_disk_last_status: 0,
             halted: 0,
             invalid_opcode: 0,
             exited: 0,
@@ -68,6 +86,15 @@ impl Core {
         self.s = [0; SEGMENT_REGISTER_COUNT];
         self.ip = 0;
         self.flags = IF;
+        self.dos_compat_mode = 1;
+        self.floppy_cylinders = 0;
+        self.floppy_heads = 0;
+        self.floppy_sectors_per_track = 0;
+        self.hard_disk_cylinders = 0;
+        self.hard_disk_heads = 0;
+        self.hard_disk_sectors_per_track = 0;
+        self.floppy_last_disk_status = 0;
+        self.hard_disk_last_status = 0;
         self.halted = 0;
         self.invalid_opcode = 0;
         self.exited = 0;

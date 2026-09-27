@@ -13,6 +13,7 @@ mod execute;
 mod execute_groups;
 mod interrupts;
 mod opcodes;
+mod ports;
 mod strings;
 mod wasm_abi;
 pub use wasm_abi::*;

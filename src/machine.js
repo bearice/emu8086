@@ -1,18 +1,35 @@
 // Machine: CPU + 80x25 text screen + keyboard, with .COM loading.
 import { CPU, R, S } from './cpu.js';
+import { DiskImage, HARD_DISK_GEOMETRY, parseFloppyGeometry, SECTOR_BYTES } from './disk.js';
 
 export const VRAM = 0xb8000;
 export const COLS = 80, ROWS = 25;
 export const LOAD_SEG = 0x0100;
+const FLOPPY_BOOT_ADDR = 0x7c00;
+const BIOS_SEG = 0xf000;
+const BIOS_DPT_OFFSET = 0x0200;
 
 export class Machine {
   constructor() {
     this.kbd = [];
+    this.port61Latch = 0;
+    this.refreshToggle = false;
+    this.vgaRetraceToggle = false;
+    this.floppyImage = null;
+    this.floppy = null;
+    this.floppyDisk = null;
+    this.hardDisk = null;
+    this.hardDiskAttached = false;
+    this.hardDiskName = 'harddisk.img';
     this.cursor = 0;
     this.attr = 0x07;
     this.cpu = new CPU({
       onOutput: (c) => (c < 0 ? this.clear() : this.putChar(c)),
       onInput: (peek) => (this.kbd.length ? (peek ? this.kbd[0] : this.kbd.shift()) : -1),
+      onDiskRead: (...args) => this.readDisk(...args),
+      onDiskWrite: (...args) => this.writeDisk(...args),
+      onPortRead: (port) => this.readPort(port),
+      onPortWrite: (port, value) => this.writePort(port, value),
     });
     this.breakpoints = new Set();
     this.syncedBreakpoints = new Set();
@@ -22,40 +39,193 @@ export class Machine {
 
   clear() {
     const m = this.cpu.mem;
-    for (let i = 0; i < COLS * ROWS; i++) { m[VRAM + i * 2] = 0x20; m[VRAM + i * 2 + 1] = this.attr; }
+    const page = m[0x462] & 7;
+    const base = VRAM + page * 0x1000;
+    for (let i = 0; i < COLS * ROWS; i++) { m[base + i * 2] = 0x20; m[base + i * 2 + 1] = this.attr; }
     this.cursor = 0;
+    this.cpu.wr16(0x450 + page * 2, 0);
   }
 
   scroll() {
     const m = this.cpu.mem;
-    m.copyWithin(VRAM, VRAM + COLS * 2, VRAM + COLS * ROWS * 2);
+    const page = m[0x462] & 7;
+    const base = VRAM + page * 0x1000;
+    m.copyWithin(base, base + COLS * 2, base + COLS * ROWS * 2);
     for (let i = 0; i < COLS; i++) {
-      m[VRAM + (COLS * (ROWS - 1) + i) * 2] = 0x20;
-      m[VRAM + (COLS * (ROWS - 1) + i) * 2 + 1] = this.attr;
+      m[base + (COLS * (ROWS - 1) + i) * 2] = 0x20;
+      m[base + (COLS * (ROWS - 1) + i) * 2 + 1] = this.attr;
     }
     this.cursor -= COLS;
+    this.cpu.wr16(0x450 + page * 2, (((this.cursor / COLS) & 0xff) << 8) | (this.cursor % COLS));
   }
 
   putChar(c) {
     const m = this.cpu.mem;
+    const page = m[0x462] & 7;
+    const base = VRAM + page * 0x1000;
+    const position = this.cpu.rd16(0x450 + page * 2);
+    this.cursor = (position >> 8) * COLS + (position & 0xff);
     if (c === 13) { this.cursor -= this.cursor % COLS; }
     else if (c === 10) { this.cursor += COLS; }
-    else if (c === 8) { if (this.cursor > 0) { this.cursor--; m[VRAM + this.cursor * 2] = 0x20; } }
+    else if (c === 8) { if (this.cursor > 0) { this.cursor--; m[base + this.cursor * 2] = 0x20; } }
     else if (c === 9) { this.cursor = (Math.floor(this.cursor / 8) + 1) * 8; }
     else if (c === 7) { /* bell */ }
     else {
-      m[VRAM + this.cursor * 2] = c & 0xff;
-      m[VRAM + this.cursor * 2 + 1] = this.attr;
+      if (this.cursor >= 0 && this.cursor < COLS * ROWS) {
+        m[base + this.cursor * 2] = c & 0xff;
+        m[base + this.cursor * 2 + 1] = this.attr;
+      }
       this.cursor++;
     }
     while (this.cursor >= COLS * ROWS) this.scroll();
+    this.cpu.wr16(0x450 + page * 2, (((this.cursor / COLS) & 0xff) << 8) | (this.cursor % COLS));
   }
 
-  keyPress(code) { this.kbd.push(code & 0xff); }
+  keyPress(code, scan = 0) { this.kbd.push(((scan & 0xff) << 8) | (code & 0xff)); }
+
+  readPort(port) {
+    if (port === 0x61) {
+      this.refreshToggle = !this.refreshToggle;
+      return (this.port61Latch & 0xef) | (this.refreshToggle ? 0x10 : 0);
+    }
+    if (port === 0x64) return 0; // keyboard controller input buffer is empty
+    if (port === 0x3ba || port === 0x3da) {
+      this.vgaRetraceToggle = !this.vgaRetraceToggle;
+      return this.vgaRetraceToggle ? (port === 0x3ba ? 0x80 : 0x08) : 0;
+    }
+    return 0;
+  }
+
+  writePort(port, value) {
+    if (port === 0x61) this.port61Latch = value & 0xef;
+  }
+
+  get diskDirty() { return this.floppyDisk?.dirty ?? false; }
+  get hardDiskDirty() { return this.hardDiskAttached && (this.hardDisk?.dirty ?? false); }
+
+  markDiskSaved(drive) {
+    const disk = drive === 0 ? this.floppyDisk : drive === 0x80 ? this.hardDisk : null;
+    disk?.markSaved();
+  }
+
+  attachHardDisk(image, name = 'harddisk.img') {
+    this.hardDisk = new DiskImage(image, HARD_DISK_GEOMETRY);
+    this.hardDiskAttached = true;
+    this.hardDiskName = name;
+    if (this.floppyDisk) {
+      this.cpu.setHardDiskGeometry(
+        HARD_DISK_GEOMETRY.cylinders,
+        HARD_DISK_GEOMETRY.heads,
+        HARD_DISK_GEOMETRY.sectorsPerTrack,
+      );
+      this.cpu.wr8(0x475, 1);
+    }
+    return this.hardDisk.geometry;
+  }
+
+  bootFloppy(image) {
+    const bytes = image instanceof Uint8Array ? image : new Uint8Array(image);
+    const geometry = parseFloppyGeometry(bytes);
+    this.floppyDisk = new DiskImage(bytes, geometry);
+    this.floppyImage = this.floppyDisk.bytes;
+    this.floppy = geometry;
+    this.loaded = null;
+    if (!this.hardDisk) this.hardDisk = DiskImage.blank(HARD_DISK_GEOMETRY);
+    this.hardDiskAttached = true;
+    this.bootFromFloppy();
+    return geometry;
+  }
+
+  bootFromFloppy() {
+    const cpu = this.cpu;
+    const geometry = this.floppy;
+    cpu.reset();
+    cpu.mem.fill(0);
+    cpu.setDosCompatMode(false);
+    cpu.setFloppyGeometry(geometry.cylinders, geometry.heads, geometry.sectorsPerTrack);
+    cpu.setHardDiskGeometry(
+      HARD_DISK_GEOMETRY.cylinders,
+      HARD_DISK_GEOMETRY.heads,
+      HARD_DISK_GEOMETRY.sectorsPerTrack,
+    );
+    this.port61Latch = 0;
+    this.refreshToggle = false;
+    this.vgaRetraceToggle = false;
+    this.installBiosState();
+    cpu.mem.set(this.floppyImage.subarray(0, SECTOR_BYTES), FLOPPY_BOOT_ADDR);
+    cpu.s[S.CS] = cpu.s[S.DS] = cpu.s[S.ES] = cpu.s[S.SS] = 0;
+    cpu.r[R.SP] = FLOPPY_BOOT_ADDR;
+    cpu.r[R.DX] = 0;
+    cpu.ip = FLOPPY_BOOT_ADDR;
+    this.kbd.length = 0;
+    this.clear();
+  }
+
+  installBiosState() {
+    const cpu = this.cpu;
+    const mem = cpu.mem;
+    const write16 = (addr, value) => cpu.wr16(addr, value);
+
+    // BIOS Data Area values used by DOS and text-mode programs.
+    write16(0x410, 0x0021); // one floppy drive, 80-column color display
+    write16(0x413, 640);
+    mem[0x449] = 3;
+    write16(0x44a, COLS);
+    write16(0x44c, COLS * ROWS * 2);
+    write16(0x44e, 0);
+    write16(0x450, 0);
+    write16(0x460, 0x0607);
+    mem[0x462] = 0;
+    write16(0x463, 0x03d4);
+    mem[0x475] = this.hardDiskAttached ? 1 : 0;
+    mem[0x484] = ROWS - 1;
+    mem[0x485] = 16;
+    write16(0x41a, 0x001e);
+    write16(0x41c, 0x001e);
+
+    // INT 1Eh points to the diskette parameter table copied by the MS-DOS 5 boot sector.
+    const dptAddress = (BIOS_SEG << 4) + BIOS_DPT_OFFSET;
+    mem.set([0xdf, 0x02, 0x25, 0x02, 0x12, 0x1b, 0xff, 0x6c, 0xf6, 0x0f, 0x08], dptAddress);
+    write16(0x1e * 4, BIOS_DPT_OFFSET);
+    write16(0x1e * 4 + 2, BIOS_SEG);
+
+    // Firmware-vector stubs let DOS chain to the BIOS with PUSHF/CALL FAR.
+    for (const [index, vector] of [0x10, 0x13, 0x16].entries()) {
+      const offset = 0x0100 + index * 3;
+      const address = (BIOS_SEG << 4) + offset;
+      mem.set([0xcd, vector, 0xcf], address); // INT vector; IRET
+      write16(vector * 4, offset);
+      write16(vector * 4 + 2, BIOS_SEG);
+    }
+  }
+
+  diskFor(drive) {
+    if (drive === 0) return this.floppyDisk;
+    if (drive === 0x80 && this.hardDiskAttached) return this.hardDisk;
+    return null;
+  }
+
+  readDisk(drive, cylinder, head, sector, count, destination) {
+    const data = this.diskFor(drive)?.readSectors(cylinder, head, sector, count);
+    if (!data) return 0;
+    for (let i = 0; i < data.length; i++) this.cpu.wr8(destination + i, data[i]);
+    return 1;
+  }
+
+  writeDisk(drive, cylinder, head, sector, count, source) {
+    const disk = this.diskFor(drive);
+    if (!disk || !Number.isInteger(count) || count < 1) return 0;
+    const data = new Uint8Array(count * SECTOR_BYTES);
+    for (let i = 0; i < data.length; i++) data[i] = this.cpu.rd8(source + i);
+    return disk.writeSectors(cylinder, head, sector, data) ? 1 : 0;
+  }
 
   load(bytes, origin) {
     const cpu = this.cpu;
     cpu.reset();
+    cpu.setDosCompatMode(true);
+    cpu.setFloppyGeometry(0, 0, 0);
+    cpu.setHardDiskGeometry(0, 0, 0);
     cpu.mem.fill(0, 0, 0xb8000);
     cpu.mem.fill(0, 0xb8000 + COLS * ROWS * 2);
     cpu.s[S.CS] = cpu.s[S.DS] = cpu.s[S.ES] = cpu.s[S.SS] = LOAD_SEG;
@@ -67,10 +237,17 @@ export class Machine {
     cpu.wr16(0xfffe + (LOAD_SEG << 4), 0x0000);
     this.kbd.length = 0;
     this.clear();
+    this.floppyImage = null;
+    this.floppy = null;
+    this.floppyDisk = null;
+    this.hardDiskAttached = false;
     this.loaded = { bytes, origin };
   }
 
-  reload() { if (this.loaded) this.load(this.loaded.bytes, this.loaded.origin); }
+  reload() {
+    if (this.floppyImage) this.bootFromFloppy();
+    else if (this.loaded) this.load(this.loaded.bytes, this.loaded.origin);
+  }
 
   step() {
     const ok = this.cpu.step();

@@ -452,19 +452,31 @@ impl Core {
                 }
             }
             OP_IN_AL_IMM8 => {
-                self.fetch8();
-                self.set_r8(AL_BYTE_INDEX, 0);
+                let port = self.fetch8() as u16;
+                let value = self.port_in(port, IO_WIDTH_BYTE) as u8;
+                self.set_r8(AL_BYTE_INDEX, value);
             }
             OP_IN_AX_IMM8 => {
-                self.fetch8();
-                self.r[AX] = 0;
+                let port = self.fetch8() as u16;
+                self.r[AX] = self.port_in(port, IO_WIDTH_WORD);
             }
-            OP_OUT_IMM8_AL | OP_OUT_IMM8_AX => {
-                self.fetch8();
+            OP_OUT_IMM8_AL => {
+                let port = self.fetch8() as u16;
+                self.port_out(port, self.get_r8(AL_BYTE_INDEX) as u16, IO_WIDTH_BYTE);
             }
-            OP_IN_AL_DX => self.set_r8(AL_BYTE_INDEX, 0),
-            OP_IN_AX_DX => self.r[AX] = 0,
-            OP_OUT_DX_AL | OP_OUT_DX_AX => (),
+            OP_OUT_IMM8_AX => {
+                let port = self.fetch8() as u16;
+                self.port_out(port, self.r[AX], IO_WIDTH_WORD);
+            }
+            OP_IN_AL_DX => {
+                let value = self.port_in(self.r[DX], IO_WIDTH_BYTE) as u8;
+                self.set_r8(AL_BYTE_INDEX, value);
+            }
+            OP_IN_AX_DX => self.r[AX] = self.port_in(self.r[DX], IO_WIDTH_WORD),
+            OP_OUT_DX_AL => {
+                self.port_out(self.r[DX], self.get_r8(AL_BYTE_INDEX) as u16, IO_WIDTH_BYTE)
+            }
+            OP_OUT_DX_AX => self.port_out(self.r[DX], self.r[AX], IO_WIDTH_WORD),
             OP_CALL_NEAR_REL16 => {
                 let d = self.fetch16() as i16;
                 self.push(self.ip);

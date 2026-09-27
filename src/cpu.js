@@ -15,14 +15,28 @@ export class CPU {
     if (!coreModule) throw new Error('WebAssembly CPU module has not been initialized');
     this.onOutput = opts.onOutput || (() => {});
     this.onInput = opts.onInput || (() => -1);
+    this.onDiskRead = opts.onDiskRead || (() => 0);
+    this.onDiskWrite = opts.onDiskWrite || (() => 0);
+    this.onPortRead = opts.onPortRead || (() => 0);
+    this.onPortWrite = opts.onPortWrite || (() => {});
     const dateNow = opts.dateNow || (() => new Date());
     this.instance = new WebAssembly.Instance(coreModule, { env: {
       host_input: (peek) => this.onInput(!!peek) ?? -1,
+      host_disk_read: (drive, cylinder, head, sector, count, destination) =>
+        this.onDiskRead(drive, cylinder, head, sector, count, destination) | 0,
+      host_disk_write: (drive, cylinder, head, sector, count, source) =>
+        this.onDiskWrite(drive, cylinder, head, sector, count, source) | 0,
+      host_port_read: (port, width) => (this.onPortRead(port & 0xffff, width) ?? 0) | 0,
+      host_port_write: (port, value, width) => this.onPortWrite(port & 0xffff, value & 0xffff, width),
       host_time: () => {
         const d = dateNow();
         const cx = (d.getHours() << 8) | d.getMinutes();
         const dx = (d.getSeconds() << 8) | Math.floor(d.getMilliseconds() / 10);
         return ((cx << 16) | dx) | 0;
+      },
+      host_date: () => {
+        const d = dateNow();
+        return (((d.getFullYear() & 0xffff) << 16) | ((d.getMonth() + 1) << 8) | d.getDate()) | 0;
       },
     } });
     this.exports = this.instance.exports;
@@ -35,6 +49,14 @@ export class CPU {
   }
 
   reset() { this.exports.reset(); }
+
+  setDosCompatMode(enabled) { this.exports.set_dos_compat_mode(enabled ? 1 : 0); }
+  setFloppyGeometry(cylinders, heads, sectorsPerTrack) {
+    this.exports.set_floppy_geometry(cylinders >>> 0, heads >>> 0, sectorsPerTrack >>> 0);
+  }
+  setHardDiskGeometry(cylinders, heads, sectorsPerTrack) {
+    this.exports.set_hard_disk_geometry(cylinders >>> 0, heads >>> 0, sectorsPerTrack >>> 0);
+  }
 
   get ip() { return this.exports.get_ip(); }
   set ip(value) { this.exports.set_ip(value); }

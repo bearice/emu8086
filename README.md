@@ -26,9 +26,11 @@ npm run build   # static production build into dist/
 | `src/cpu.js` | JavaScript adapter for WASM registers, memory, stepping, and host I/O |
 | `src/asm.js` | two-pass (fixpoint) assembler with labels, `equ`, `db/dw`, `dup`, expressions |
 | `src/disasm.js` | disassembler used by the debugger view |
-| `src/machine.js` | CPU + text screen + keyboard + `.COM` loader (loads at `0100:0100`) |
+| `src/machine.js` | CPU + text screen + keyboard + PC BIOS + floppy/hard-disk host I/O |
+| `src/disk.js` | Raw disk images, CHS geometry, bounded sector reads/writes |
 | `src/samples.js` | the example programs in the dropdown |
 | `src/main.js` | UI: editor, screen, registers/flags, disassembly, hex dump, run loop |
+| `test/run.js` | Headless CPU, DOS command, and BIOS disk regression checks |
 
 ## Emulated
 
@@ -42,6 +44,26 @@ npm run build   # static production build into dist/
 * BIOS/DOS services used by ordinary `.COM` code: `INT 21h` AH=01/02/06/07/08/09/0Ah/2Ch/4Ch,
   `INT 10h` teletype, `INT 16h` keyboard, `INT 20h`. Anything else vectors through the IVT.
 * Text video RAM at `B800:0000` — writing there directly works, colours included.
+
+## Booting a floppy image
+
+Choose **Boot MS-DOS 5.0** to start the bundled `msdos5.img` asset, or choose **Open floppy image**
+to select another bootable raw image with a valid BIOS Parameter Block and `55AAh` boot signature.
+The machine loads sector 0 at `0000:7C00`, supplies a PC-style BIOS Data Area and diskette
+parameter table, and provides BIOS CHS disk read/write, video text, keyboard, memory-size, and
+equipment services. The supplied MS-DOS 5.0 image is a 1.44 MB FAT12 floppy (80 cylinders,
+2 heads, 18 sectors per track). A blank fixed disk is attached as drive `80h` (C:) using
+615 cylinders, 4 heads, and 17 sectors per track (41,820 sectors; 21,411,840 bytes). DOS `FDISK`
+is verified to reach its fixed-disk menu and report drive 1 with no partitions on a fresh disk.
+Partition creation and `FORMAT` have not been verified yet.
+
+Use **Open hard disk image** to attach a raw image with exactly that size and geometry. Disk writes
+stay in memory until **Save floppy image** or **Save hard disk image** downloads the changed image;
+the bundled floppy asset is cloned before guest writes. In this boot mode, `INT 20h` and `INT 21h`
+are dispatched through the guest's interrupt vector table so DOS provides those services itself.
+The machine also models the PPI/keyboard status ports (`61h`/`64h`) and VGA retrace status ports
+(`3BAh`/`3DAh`) used during this image's startup checks. Floppy and hard-disk data currently go
+through BIOS services; FDC/DMA port emulation is not included.
 
 ## Debugger
 
