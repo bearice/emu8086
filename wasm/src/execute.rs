@@ -497,6 +497,7 @@ impl Core {
                 self.ip = self.ip.wrapping_add(d as u16);
             }
 
+            OP_FIRMWARE_TRAP => self.firmware_trap(),
             OP_HLT => self.halted = 1,
             OP_CMC => self.set_flag(CF, !self.flag(CF)),
             OP_CLC => self.set_flag(CF, false),

@@ -1,4 +1,5 @@
-// 8086 disassembler. disasm(read, addrOff) -> { text, len, bytes }
+// 8086 disassembler. disasm(read, addrOff, segment?) -> { text, len, bytes }
+import { FIRMWARE_TRAP, isFirmwareTrapAddress } from './firmware.js';
 
 const R8 = ['al', 'cl', 'dl', 'bl', 'ah', 'ch', 'dh', 'bh'];
 const R16 = ['ax', 'cx', 'dx', 'bx', 'sp', 'bp', 'si', 'di'];
@@ -11,7 +12,7 @@ const CC = ['o', 'no', 'b', 'nb', 'z', 'nz', 'be', 'a', 's', 'ns', 'p', 'np', 'l
 const h = (v, n = 2) => v.toString(16).toUpperCase().padStart(n, '0') + 'h';
 const hx = (v) => (v > 9 ? '0' : '') + v.toString(16).toUpperCase() + 'h';
 
-export function disasm(readByte, start) {
+export function disasm(readByte, start, segment) {
   let p = start;
   const bytes = [];
   const b = () => { const v = readByte(p++) & 0xff; bytes.push(v); return v; };
@@ -59,7 +60,11 @@ export function disasm(readByte, start) {
 
   const finish = (t) => { text = t; };
 
-  if (op < 0x40 && (op & 7) < 6) {
+  const physicalAddress = segment === undefined ? start : ((segment << 4) + (start & 0xffff)) & 0xfffff;
+  if (op === FIRMWARE_TRAP && isFirmwareTrapAddress(physicalAddress, readByte(start + 1))
+      && readByte(start + 2) === 0xcf) {
+    finish(`firmware ${h(b())}`);
+  } else if (op < 0x40 && (op & 7) < 6) {
     const name = ALU[(op >> 3) & 7], form = op & 7;
     if (form === 0) { const m = getModrm(); finish(`${name} ${rm8()}, ${R8[m.reg]}`); }
     else if (form === 1) { const m = getModrm(); finish(`${name} ${rm16()}, ${R16[m.reg]}`); }

@@ -7,10 +7,13 @@ use rust_core::cell::UnsafeCell;
 use rust_core::panic::PanicInfo;
 
 mod alu;
+mod bios;
 mod constants;
 mod core;
+mod dos_compat;
 mod execute;
 mod execute_groups;
+mod firmware;
 mod interrupts;
 mod opcodes;
 mod ports;

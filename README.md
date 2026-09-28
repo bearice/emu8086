@@ -70,11 +70,20 @@ The machine also models the PPI/keyboard status ports (`61h`/`64h`) and VGA retr
 (`3BAh`/`3DAh`) used during this image's startup checks. Floppy and hard-disk data currently go
 through BIOS services; FDC/DMA port emulation is not included.
 
-Most BIOS software interrupts are currently dispatched directly by the Rust core before the
-IVT lookup. The ROM entry stubs support calls that chain to the original BIOS, including the
-default INT 15h keyboard-intercept handler and the warm-reset entry at `FFFF:0000`.
-This is a synthetic BIOS; general guest hooks on intercepted BIOS interrupts are not fully
-honored yet. BIOS disk services include CHS read/write and verify, geometry, and disk type;
+All software interrupts and the CPU's existing exception paths use the guest IVT at
+`0000:0000`: push FLAGS/CS/IP, clear IF/TF, and jump to the selected segment:offset.
+The synthetic BIOS installs ROM service stubs in `F000:` containing `F1 <service>; IRET`.
+The emulator accepts this private trap only at a registered ROM entry with the expected
+signature; ordinary guest code cannot use it as an extra CPU instruction. BIOS services
+are invoked only when execution reaches their stub, so guest hooks, far-jump chaining,
+and `PUSHF/CALL FAR` to the original BIOS entry work through the same path.
+
+Service result flags such as CF and ZF update the saved FLAGS word before the stub's
+real IRET; caller IF/TF/DF are preserved. Blocking keyboard reads retry the ROM trap
+with the existing frame. The .COM demo environment installs its simulated DOS services
+as IVT stubs too; a disk boot leaves those services to the guest DOS. The debugger shows
+private ROM traps as `firmware <service>`. The BIOS also supplies the warm-reset entry at
+`FFFF:0000`. Disk services include CHS read/write and verify, geometry, and disk type;
 verify checks image bounds without transferring data into guest memory.
 
 ## Debugger

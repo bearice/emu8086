@@ -1,17 +1,15 @@
 // Machine: CPU + 80x25 text screen + keyboard, with .COM loading.
 import { CPU, R, S } from './cpu.js';
 import { DiskImage, HARD_DISK_GEOMETRY, parseFloppyGeometry, SECTOR_BYTES } from './disk.js';
+import {
+  BIOS_SEG, BIOS_DPT_OFFSET, KEYBOARD_CONTROLLER_COMMAND_PORT,
+  KEYBOARD_CONTROLLER_RESET_COMMAND, installFirmwareVectors,
+} from './firmware.js';
 
 export const VRAM = 0xb8000;
 export const COLS = 80, ROWS = 25;
 export const LOAD_SEG = 0x0100;
 const FLOPPY_BOOT_ADDR = 0x7c00;
-const BIOS_SEG = 0xf000;
-const BIOS_DPT_OFFSET = 0x0200;
-const BIOS_KEYBOARD_INTERCEPT_OFFSET = 0x0120;
-const BIOS_RESET_VECTOR_ADDR = 0xffff0;
-const KEYBOARD_CONTROLLER_COMMAND_PORT = 0x64;
-const KEYBOARD_CONTROLLER_RESET_COMMAND = 0xfe;
 
 export class Machine {
   constructor() {
@@ -41,6 +39,7 @@ export class Machine {
     this.syncedBreakpoints = new Set();
     this.clear();
     this.loaded = null;
+    this.installBiosState();
   }
 
   clear() {
@@ -197,6 +196,7 @@ export class Machine {
     const cpu = this.cpu;
     const mem = cpu.mem;
     const write16 = (addr, value) => cpu.wr16(addr, value);
+    installFirmwareVectors(cpu, { dosCompat: this.bootDrive === null });
 
     // BIOS Data Area values used by DOS and text-mode programs.
     write16(0x410, this.floppy ? 0x0021 : 0x0020); // 80-column color display, optional floppy drive
@@ -221,33 +221,6 @@ export class Machine {
     write16(0x1e * 4, BIOS_DPT_OFFSET);
     write16(0x1e * 4 + 2, BIOS_SEG);
 
-    // Firmware-vector stubs let DOS chain to the BIOS with PUSHF/CALL FAR.
-    for (const [index, vector] of [0x10, 0x13, 0x16].entries()) {
-      const offset = 0x0100 + index * 3;
-      const address = (BIOS_SEG << 4) + offset;
-      mem.set([0xcd, vector, 0xcf], address); // INT vector; IRET
-      write16(vector * 4, offset);
-      write16(vector * 4 + 2, BIOS_SEG);
-    }
-
-    // DOS chains its INT 15h keyboard hook to this default handler. Set carry
-    // in the saved interrupt flags so IRET permits the original scan code.
-    mem.set([
-      0x55,             // PUSH BP
-      0x89, 0xe5,       // MOV BP, SP
-      0x83, 0x4e, 0x06, 0x01, // OR WORD [BP+6], 1
-      0x5d, 0xcf,       // POP BP; IRET
-    ], (BIOS_SEG << 4) + BIOS_KEYBOARD_INTERCEPT_OFFSET);
-    write16(0x15 * 4, BIOS_KEYBOARD_INTERCEPT_OFFSET);
-    write16(0x15 * 4 + 2, BIOS_SEG);
-
-    // A guest warm boot jumps to FFFF:0000. Reuse the 8042 reset request,
-    // which the Machine consumes after CPU execution returns to the host.
-    mem.set([
-      0xb0, KEYBOARD_CONTROLLER_RESET_COMMAND, // MOV AL, FEh
-      0xe6, KEYBOARD_CONTROLLER_COMMAND_PORT,  // OUT 64h, AL
-      0xf4, // HLT if no machine handles the reset
-    ], BIOS_RESET_VECTOR_ADDR);
   }
 
   diskFor(drive) {
@@ -294,6 +267,7 @@ export class Machine {
     this.bootDrive = null;
     this.hardDiskAttached = false;
     this.loaded = { bytes, origin };
+    this.installBiosState();
   }
 
   reload() {

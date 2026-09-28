@@ -6,6 +6,8 @@ import { Machine, VRAM, COLS, ROWS } from '../src/machine.js';
 import { DiskImage, HARD_DISK_GEOMETRY } from '../src/disk.js';
 import { readFile } from 'node:fs/promises';
 import { verifyMsDosInstallation } from './msdos-install.js';
+import { installFirmwareVectors } from '../src/firmware.js';
+import { verifyInterruptDispatch } from './interrupts.js';
 
 await initializeCPU(await readFile(new URL('../src/wasm/kernel.wasm', import.meta.url)));
 
@@ -19,6 +21,7 @@ function run(code, input = '', cpuOptions = {}) {
     onInput: () => (inPos < input.length ? input.charCodeAt(inPos++) : -1),
     ...cpuOptions,
   });
+  installFirmwareVectors(cpu, { dosCompat: true });
   cpu.s[S.CS] = cpu.s[S.DS] = cpu.s[S.ES] = cpu.s[S.SS] = 0x0100;
   cpu.ip = res.origin;
   cpu.r[R.SP] = 0xfffe;
@@ -204,6 +207,8 @@ far_target:
   }
   check('disasm', lines.join(' | '), 'mov ah, 09h | mov dx, 010Dh | int 21h | mov ah, 4Ch | mov al, 00h | int 21h');
 }
+
+verifyInterruptDispatch(check);
 
 // BIOS INT 10h AH=07 uses BH as the fill attribute and clears the active page.
 {

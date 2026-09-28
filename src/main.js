@@ -245,7 +245,7 @@ function updateDisasm() {
   const base = cpu.s[S.CS];
   for (let i = 0; i < 18; i++) {
     const at = off;
-    const d = disasm((p) => cpu.mem[((base << 4) + (p & 0xffff)) & 0xfffff], off);
+    const d = disasm((p) => cpu.mem[((base << 4) + (p & 0xffff)) & 0xfffff], off, base);
     const row = el('div', 'drow' + (i === 0 ? ' cur' : '') + (machine.breakpoints.has(at) ? ' bp' : ''));
     row.append(el('span', 'bpdot', machine.breakpoints.has(at) ? '\u25cf' : ''));
     row.append(el('span', 'daddr', `${hex(base, 4)}:${hex(at, 4)}`));

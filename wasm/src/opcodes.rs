@@ -120,6 +120,8 @@ pub(crate) const OP_OUT_DX_AL: u8 = 0xee;
 pub(crate) const OP_OUT_DX_AX: u8 = 0xef;
 
 pub(crate) const OP_HLT: u8 = 0xf4;
+// Emulator-only trap restricted to the synthetic firmware ROM.
+pub(crate) const OP_FIRMWARE_TRAP: u8 = 0xf1;
 pub(crate) const OP_CMC: u8 = 0xf5;
 pub(crate) const OP_CLC: u8 = 0xf8;
 pub(crate) const OP_STC: u8 = 0xf9;

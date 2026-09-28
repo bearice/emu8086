@@ -324,18 +324,6 @@ impl Core {
         }
     }
 
-    pub(crate) fn set_unhandled_int(&mut self, n: u8) {
-        let mut i = 0;
-        self.push_error_text(&mut i, b"unhandled INT ");
-        if n >= 1 << HEX_NIBBLE_BITS {
-            self.push_error_hex(&mut i, n as u16, 2);
-        } else {
-            self.push_error_hex(&mut i, n as u16, 1);
-        }
-        self.push_error_text(&mut i, b"h");
-        self.error_len = i as u32;
-    }
-
     pub(crate) fn set_invalid_opcode(&mut self, op: u8) {
         let mut i = 0;
         self.push_error_text(&mut i, b"invalid opcode ");

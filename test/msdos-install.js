@@ -122,7 +122,11 @@ export function verifyMsDosInstallation(check, image) {
   restored.cpu.mem.set([0xcd, 0x19], 0x10100);
   restored.cpu.s[S.CS] = 0x1000;
   restored.cpu.ip = 0x100;
-  restored.step();
+  // DOS hooks INT 19h to clean up first; follow that IVT chain to the BIOS.
+  for (let step = 0; step < 2000 && !restored.cpu.error && !restored.cpu.halted; step++) {
+    restored.step();
+    if (restored.cpu.s[S.CS] === 0 && restored.cpu.ip === 0x7c00) break;
+  }
   check('BIOS INT 19h falls back to the installed hard disk', restored.cpu.s[S.CS] === 0
     && restored.cpu.ip === 0x7c00 && restored.cpu.r[R.DX] === 0x80 && !restored.cpu.halted, true);
   return machine;
