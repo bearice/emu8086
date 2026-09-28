@@ -22,9 +22,11 @@ document.querySelector('#app').innerHTML = `
     <button id="bootfloppy">Open floppy image</button>
     <input id="floppyFile" type="file" accept=".img,.ima,.dsk,application/octet-stream" hidden />
     <button id="savefloppy" hidden disabled>Save floppy image</button>
+    <button id="ejectfloppy" hidden>Eject floppy</button>
     <button id="opendisk">Open hard disk image</button>
     <input id="hardDiskFile" type="file" accept=".img,.hdd,.raw,application/octet-stream" hidden />
     <button id="saveharddisk" hidden disabled>Save hard disk image</button>
+    <button id="bootharddisk" hidden>Boot hard disk</button>
     <button id="runpause">Run</button>
     <button id="step">Step</button>
     <button id="reset">Reset</button>
@@ -339,13 +341,34 @@ function refresh() {
   $('runpause').textContent = running ? 'Pause' : 'Run';
   $('savefloppy').hidden = !machine.floppyImage;
   $('savefloppy').disabled = !machine.diskDirty;
+  $('ejectfloppy').hidden = !machine.floppyImage;
   $('saveharddisk').hidden = !machine.hardDiskAttached;
   $('saveharddisk').disabled = !machine.hardDiskDirty;
+  $('bootharddisk').hidden = !machine.hardDiskAttached;
 }
 
 $('build').onclick = () => build(true);
 $('bootfloppy').onclick = () => $('floppyFile').click();
 $('opendisk').onclick = () => $('hardDiskFile').click();
+$('ejectfloppy').onclick = () => {
+  machine.ejectFloppy();
+  setStatus('floppy ejected');
+  canvas.focus();
+  refresh();
+};
+$('bootharddisk').onclick = () => {
+  try {
+    const geometry = machine.bootHardDisk();
+    symbolAddrs.clear();
+    $('asm-info').textContent = `${machine.hardDiskName} · ${geometry.cylinders} cylinders, ${geometry.heads} heads, ${geometry.sectorsPerTrack} sectors/track`;
+    running = true;
+    setStatus(`booting ${machine.hardDiskName}`, 'ok');
+    canvas.focus();
+    refresh();
+  } catch (error) {
+    setStatus(error.message || String(error), 'bad');
+  }
+};
 function startFloppyImage(image, name) {
   const geometry = machine.bootFloppy(image);
   machine.floppyName = name;

@@ -5,6 +5,7 @@ import { SAMPLES } from '../src/samples.js';
 import { Machine, VRAM, COLS, ROWS } from '../src/machine.js';
 import { DiskImage, HARD_DISK_GEOMETRY } from '../src/disk.js';
 import { readFile } from 'node:fs/promises';
+import { verifyMsDosInstallation } from './msdos-install.js';
 
 await initializeCPU(await readFile(new URL('../src/wasm/kernel.wasm', import.meta.url)));
 
@@ -25,6 +26,20 @@ function run(code, input = '', cpuOptions = {}) {
   let n = 0;
   while (!cpu.halted && n++ < 2_000_000) cpu.step();
   return { out: out.join(''), cpu, bytes: res.bytes, error: cpu.error, steps: n };
+}
+
+function readTextScreen(cpu) {
+  const lines = [];
+  const pageBase = VRAM + (cpu.mem[0x462] & 7) * 0x1000;
+  for (let row = 0; row < ROWS; row++) {
+    let line = '';
+    for (let column = 0; column < COLS; column++) {
+      const value = cpu.mem[pageBase + (row * COLS + column) * 2];
+      line += value >= 32 && value < 127 ? String.fromCharCode(value) : ' ';
+    }
+    lines.push(line.trimEnd());
+  }
+  return lines;
 }
 
 let fail = 0;
@@ -190,10 +205,156 @@ far_target:
   check('disasm', lines.join(' | '), 'mov ah, 09h | mov dx, 010Dh | int 21h | mov ah, 4Ch | mov al, 00h | int 21h');
 }
 
+// BIOS INT 10h AH=07 uses BH as the fill attribute and clears the active page.
+{
+  const machine = new Machine();
+  const cpu = machine.cpu;
+  const activeCell = VRAM + (12 * COLS + 45) * 2;
+  const inactiveCell = activeCell + 7 * 0x1000;
+  cpu.mem[0x462] = 0;
+  cpu.mem[activeCell] = 'X'.charCodeAt(0);
+  cpu.mem[inactiveCell] = 'Y'.charCodeAt(0);
+  const program = assemble(`org 100h
+    mov ax, 0700h
+    mov bx, 0700h
+    mov cx, 0000h
+    mov dx, 184fh
+    int 10h
+    hlt`);
+  cpu.mem.set(program.bytes, 0x10100);
+  cpu.s[S.CS] = 0x1000;
+  cpu.ip = program.origin;
+  cpu.r[R.SP] = 0xfffe;
+  for (let i = 0; i < 10 && !cpu.halted && !cpu.error; i++) cpu.step();
+  check('BIOS scroll window clears the active page', cpu.mem[activeCell], ' '.charCodeAt(0));
+  check('BIOS scroll window fills with the BH attribute', cpu.mem[activeCell + 1], 0x07);
+  check('BIOS scroll window leaves inactive pages alone', cpu.mem[inactiveCell], 'Y'.charCodeAt(0));
+}
+
+// Setup reads a highlighted character before redrawing it; AH=08 returns character and attribute.
+{
+  const machine = new Machine();
+  const cpu = machine.cpu;
+  const cell = VRAM + (18 * COLS + 25) * 2;
+  cpu.mem[cell] = ' '.charCodeAt(0);
+  cpu.mem[cell + 1] = 0x70;
+  cpu.wr16(0x450, (18 << 8) | 25);
+  const program = assemble(`org 100h
+    mov ax, 0870h
+    mov bx, 0070h
+    int 10h
+    hlt`);
+  cpu.mem.set(program.bytes, 0x10100);
+  cpu.s[S.CS] = 0x1000;
+  cpu.ip = program.origin;
+  cpu.r[R.SP] = 0xfffe;
+  for (let i = 0; i < 10 && !cpu.halted && !cpu.error; i++) cpu.step();
+  check('BIOS reads character and attribute under cursor', cpu.r[R.AX], 0x7020);
+}
+
+// Setup leaves a non-page value in BH while printing its settings list.
+{
+  const machine = new Machine();
+  const cpu = machine.cpu;
+  const cell = VRAM + (14 * COLS + 25) * 2;
+  cpu.mem[0x462] = 0;
+  cpu.mem[cell] = ' '.charCodeAt(0);
+  cpu.mem[cell + 3 * 0x1000] = 'Y'.charCodeAt(0);
+  cpu.wr16(0x450, (14 << 8) | 25);
+  cpu.wr16(0x450 + 3 * 2, (14 << 8) | 25);
+  const program = assemble(`org 100h
+    mov ax, 0E51h
+    mov bx, 7300h
+    int 10h
+    hlt`);
+  cpu.mem.set(program.bytes, 0x10100);
+  cpu.s[S.CS] = 0x1000;
+  cpu.ip = program.origin;
+  cpu.r[R.SP] = 0xfffe;
+  for (let i = 0; i < 10 && !cpu.halted && !cpu.error; i++) cpu.step();
+  check('BIOS TTY uses active page for invalid BH', cpu.mem[cell], 'Q'.charCodeAt(0));
+  check('BIOS TTY does not write a hidden page for invalid BH', cpu.mem[cell + 3 * 0x1000], 'Y'.charCodeAt(0));
+}
+
 // Boot the bundled MS-DOS 5.0 disk through the same Machine and BIOS path as the app.
 {
   const image = new Uint8Array(await readFile(new URL('../msdos5.img', import.meta.url)));
   const originalImage = image.slice();
+
+  const firmwareMachine = new Machine();
+  firmwareMachine.bootFloppy(image);
+  const firmwareCpu = firmwareMachine.cpu;
+  const interceptProgram = assemble(`org 100h
+    mov ax, 4F53h
+    int 15h
+    hlt`);
+  firmwareCpu.mem.set(interceptProgram.bytes, 0x10100);
+  firmwareCpu.s[S.CS] = firmwareCpu.s[S.SS] = 0x1000;
+  firmwareCpu.ip = interceptProgram.origin;
+  firmwareCpu.r[R.SP] = 0xfffe;
+  for (let i = 0; i < 20 && !firmwareCpu.halted && !firmwareCpu.error; i++) firmwareMachine.step();
+  check('BIOS keyboard intercept has a callable firmware vector', firmwareCpu.error, null);
+  check('BIOS keyboard intercept preserves the scan code', firmwareCpu.r[R.AX], 0x4f53);
+  check('BIOS keyboard intercept returns carry set', firmwareCpu.f.cf, 1);
+
+  const rebootMachine = new Machine();
+  rebootMachine.bootFloppy(image);
+  const diskBeforeReboot = rebootMachine.hardDisk;
+  diskBeforeReboot.writeSectors(614, 3, 17, new Uint8Array(512).fill(0xa5));
+  const rebootCpu = rebootMachine.cpu;
+  rebootCpu.s[S.CS] = 0xffff;
+  rebootCpu.ip = 0;
+  let bootEntryReached = false;
+  for (let i = 0; i < 20 && !rebootCpu.error && !rebootCpu.halted; i++) {
+    rebootMachine.step();
+    if (rebootCpu.s[S.CS] === 0 && rebootCpu.ip === 0x7c00) {
+      bootEntryReached = true;
+      break;
+    }
+  }
+  check('BIOS reset vector restarts the floppy boot chain', bootEntryReached, true);
+  check('BIOS reboot preserves the writable hard disk', rebootMachine.hardDisk === diskBeforeReboot
+    && rebootMachine.hardDiskDirty
+    && diskBeforeReboot.readSectors(614, 3, 17, 1).every((byte) => byte === 0xa5), true);
+
+  const setupMachine = new Machine();
+  setupMachine.bootFloppy(image);
+  const setupCpu = setupMachine.cpu;
+  let setupDateAccepted = false;
+  let setupTimeAccepted = false;
+  let welcomeAccepted = false;
+  let cleanWelcome = false;
+  let settingsReached = false;
+  let settingsText = '';
+  for (let steps = 0; steps < 3_000_000 && !setupCpu.error && !setupCpu.halted; steps++) {
+    setupCpu.step();
+    if (steps % 512 !== 0) continue;
+    settingsText = readTextScreen(setupCpu).join('\n');
+    if (!setupDateAccepted && settingsText.includes('Enter new date')) {
+      setupMachine.keyPress(13, 0x1c);
+      setupDateAccepted = true;
+    }
+    if (!setupTimeAccepted && settingsText.includes('Enter new time')) {
+      setupMachine.keyPress(13, 0x1c);
+      setupTimeAccepted = true;
+    }
+    if (!welcomeAccepted && setupCpu.waiting && settingsText.includes('Welcome to Setup.')) {
+      cleanWelcome = !settingsText.includes('Setup is determining your system configuration.')
+        && !settingsText.includes('ENTER.wait.');
+      setupMachine.keyPress(13, 0x1c);
+      welcomeAccepted = true;
+    } else if (welcomeAccepted && setupCpu.waiting
+      && settingsText.includes('Setup has determined the following default settings')) {
+      settingsReached = true;
+      break;
+    }
+  }
+  check('Setup welcome clears the progress dialog', cleanWelcome, true);
+  check('Setup settings list is visible', settingsReached
+    && ['DATE/TIME', 'COUNTRY    : United States', 'KEYBOARD   : US Default',
+      'INSTALL TO : Hard disk', 'The settings are correct.']
+      .every((text) => settingsText.includes(text)), true);
+  check('Setup settings selection contains no repeated p characters', !/p{8}/.test(settingsText), true);
 
   const diskUnit = DiskImage.blank(HARD_DISK_GEOMETRY);
   const lastSector = new Uint8Array(512).fill(0xa5);
@@ -216,10 +377,14 @@ far_target:
     int 13h
     mov ax, 0800h
     mov dx, 0080h
+    mov di, 0123h
     int 13h
     mov [0600h], ax
     mov [0602h], cx
     mov [0604h], dx
+    mov ax, es
+    mov [060ch], ax
+    mov [060eh], di
     mov ax, 1500h
     mov dx, 0080h
     int 13h
@@ -243,7 +408,47 @@ far_target:
   ].join(','), [0, 0x6691, 0x0301].join(','));
   check('BIOS INT 13h AH=15 reports a fixed disk', [
     biosCpu.rd16(0x10606), biosCpu.rd16(0x10608), biosCpu.rd16(0x1060a),
-  ].join(','), [3, 0, 41820].join(','));
+  ].join(','), [0x0300, 0, 41820].join(','));
+  check('BIOS fixed-disk geometry preserves ES:DI', [
+    biosCpu.rd16(0x1060c), biosCpu.rd16(0x1060e),
+  ].join(','), [0x1000, 0x0123].join(','));
+
+  const verifyMachine = new Machine();
+  verifyMachine.bootFloppy(image);
+  const verifyCpu = verifyMachine.cpu;
+  const initialVectors = verifyCpu.mem.slice(0, 0x400);
+  const verifyProgram = assemble(`org 100h
+    xor ax, ax
+    mov es, ax
+    xor bx, bx
+    mov ax, 0411h
+    mov cx, 0001h
+    mov dx, 0180h
+    int 13h
+    mov [0200h], ax
+    pushf
+    pop bx
+    mov [0202h], bx
+    mov ax, 0402h
+    mov cx, 6691h
+    mov dx, 0380h
+    int 13h
+    mov [0204h], ax
+    pushf
+    pop bx
+    mov [0206h], bx
+    hlt`);
+  verifyCpu.mem.set(verifyProgram.bytes, 0x10100);
+  verifyCpu.s[S.CS] = verifyCpu.s[S.DS] = verifyCpu.s[S.SS] = 0x1000;
+  verifyCpu.ip = verifyProgram.origin;
+  verifyCpu.r[R.SP] = 0xfffe;
+  for (let i = 0; i < 50 && !verifyCpu.halted && !verifyCpu.error; i++) verifyMachine.step();
+  check('BIOS verifies a hard-disk track', verifyCpu.rd16(0x10200) === 17
+    && (verifyCpu.rd16(0x10202) & 1) === 0, true);
+  check('BIOS verify rejects sectors beyond the image', verifyCpu.rd16(0x10204) === 0x0400
+    && (verifyCpu.rd16(0x10206) & 1) === 1, true);
+  check('BIOS verify does not transfer into ES:BX', initialVectors
+    .every((byte, index) => verifyCpu.mem[index] === byte), true);
 
   const machine = new Machine();
   machine.bootFloppy(image);
@@ -293,20 +498,6 @@ far_target:
     if (setupStage === 3 && consumedKeys >= 3 && peek && value < 0) keyAfterDrain = 'Y';
     return value;
   };
-  const readScreen = () => {
-    const lines = [];
-    const pageBase = VRAM + (cpu.mem[0x462] & 7) * 0x1000;
-    for (let row = 0; row < ROWS; row++) {
-      let line = '';
-      for (let column = 0; column < COLS; column++) {
-        const value = cpu.mem[pageBase + row * COLS * 2 + column * 2];
-        line += value >= 32 && value < 127 ? String.fromCharCode(value) : ' ';
-      }
-      lines.push(line.trimEnd());
-    }
-    return lines;
-  };
-
   while (!cpu.halted && !cpu.exited && !cpu.error && steps < 8_000_000) {
     cpu.step();
     steps++;
@@ -321,7 +512,7 @@ far_target:
     }
     if (steps % 512 !== 0) continue;
 
-    screen = readScreen();
+    screen = readTextScreen(cpu);
     const text = screen.join('\n');
     const normalized = text.toUpperCase();
     if (text.includes('Microsoft(R) MS-DOS(R) Version 5.00')) sawInterpreter = true;
@@ -392,6 +583,7 @@ far_target:
   check('FDISK reaches its fixed-disk menu', fdiskScreen.includes('Fixed Disk Setup Program')
     && fdiskScreen.includes('FDISK Options')
     && fdiskScreen.includes('Current fixed disk drive: 1'), true);
+  verifyMsDosInstallation(check, image);
   check('msdos5 disk writes do not mutate source asset', image.every((value, index) => value === originalImage[index]), true);
 }
 

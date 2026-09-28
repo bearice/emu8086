@@ -5,6 +5,9 @@ const INTERRUPT_VECTOR_SEGMENT_OFFSET: u32 = 2;
 const BIOS_ROM_SEGMENT: u16 = 0xf000;
 const BIOS_DISK_PARAMETER_TABLE_OFFSET: u16 = 0x0200;
 const BIOS_SYSTEM_CONFIGURATION_TABLE_OFFSET: u16 = 0x0210;
+const BOOT_SECTOR_ADDRESS: u32 = 0x7c00;
+const BOOT_SIGNATURE_OFFSET: u32 = 510;
+const BOOT_SIGNATURE: u16 = 0xaa55;
 
 const INT_BIOS_EQUIPMENT: u8 = 0x11;
 const INT_BIOS_SYSTEM: u8 = 0x15;
@@ -48,6 +51,7 @@ const VIDEO_SCROLL_UP: u8 = 0x06;
 const VIDEO_SCROLL_DOWN: u8 = 0x07;
 const VIDEO_SET_CURSOR: u8 = 0x02;
 const VIDEO_GET_CURSOR: u8 = 0x03;
+const VIDEO_READ_CHAR_ATTRIBUTE: u8 = 0x08;
 const VIDEO_WRITE_CHAR_TTY: u8 = 0x0e;
 const VIDEO_WRITE_CHAR: u8 = 0x0a;
 const VIDEO_WRITE_CHAR_ATTRIBUTE: u8 = 0x09;
@@ -56,6 +60,7 @@ const TEXT_VIDEO_BASE: u32 = 0xb8000;
 const TEXT_COLUMNS: u32 = 80;
 const TEXT_ROWS: u32 = 25;
 const TEXT_PAGE_BYTES: u32 = 0x1000;
+const TEXT_PAGE_COUNT: u8 = 8;
 
 const DOS_READ_CHAR_ECHO: u8 = 0x01;
 const DOS_WRITE_CHAR: u8 = 0x02;
@@ -76,6 +81,7 @@ const DISK_RESET: u8 = 0x00;
 const DISK_GET_STATUS: u8 = 0x01;
 const DISK_READ_SECTORS: u8 = 0x02;
 const DISK_WRITE_SECTORS: u8 = 0x03;
+const DISK_VERIFY_SECTORS: u8 = 0x04;
 const DISK_GET_PARAMETERS: u8 = 0x08;
 const DISK_GET_TYPE: u8 = 0x15;
 const FLOPPY_DRIVE: u8 = 0x00;
@@ -319,7 +325,25 @@ impl Core {
             }
             VIDEO_SET_ACTIVE_PAGE => self.wr8(0x462, page),
             VIDEO_SCROLL_UP | VIDEO_SCROLL_DOWN => self.bios_scroll(al, ah == VIDEO_SCROLL_UP),
-            VIDEO_WRITE_CHAR_TTY => self.bios_teletype(al, page),
+            VIDEO_READ_CHAR_ATTRIBUTE => {
+                let cursor = self.rd16(0x450 + page as u32 * 2);
+                let row = ((cursor >> 8) as u32).min(TEXT_ROWS - 1);
+                let column = ((cursor & 0xff) as u32).min(TEXT_COLUMNS - 1);
+                let address = TEXT_VIDEO_BASE
+                    + page as u32 * TEXT_PAGE_BYTES
+                    + (row * TEXT_COLUMNS + column) * 2;
+                self.r[AX] =
+                    ((self.rd8(address + 1) as u16) << BYTE_BITS) | self.rd8(address) as u16;
+            }
+            VIDEO_WRITE_CHAR_TTY => {
+                // Some text-mode callers leave BH untouched instead of supplying a page.
+                let tty_page = if (self.r[BX] >> BYTE_BITS) as u8 >= TEXT_PAGE_COUNT {
+                    self.rd8(0x462) & (TEXT_PAGE_COUNT - 1)
+                } else {
+                    page
+                };
+                self.bios_teletype(al, tty_page);
+            }
             VIDEO_WRITE_CHAR | VIDEO_WRITE_CHAR_ATTRIBUTE => {
                 let cursor = self.rd16(0x450 + (page as u32 * 2));
                 let row = (cursor >> 8) as u32;
@@ -413,8 +437,8 @@ impl Core {
     }
 
     fn bios_scroll(&mut self, lines: u8, up: bool) {
-        let page = ((self.r[BX] >> 8) as u8 & 7) as u32;
-        let attribute = self.r[BX] as u8;
+        let page = (self.rd8(0x462) & 7) as u32;
+        let attribute = (self.r[BX] >> BYTE_BITS) as u8;
         let top = (self.r[CX] >> 8) as u32;
         let left = (self.r[CX] & 0xff) as u32;
         let bottom = (self.r[DX] >> 8) as u32;
@@ -541,6 +565,7 @@ impl Core {
                 self.set_bios_disk_result(status, if status == 0 { count as u8 } else { 0 });
             }
             DISK_GET_PARAMETERS => self.bios_disk_parameters(),
+            DISK_VERIFY_SECTORS => self.bios_verify_sectors(drive),
             DISK_GET_TYPE => self.bios_disk_type(drive),
             _ => self.set_bios_disk_result(DISK_INVALID_COMMAND, 0),
         }
@@ -563,9 +588,6 @@ impl Core {
         if drive == FLOPPY_DRIVE {
             self.s[ES] = BIOS_ROM_SEGMENT;
             self.r[DI] = BIOS_DISK_PARAMETER_TABLE_OFFSET;
-        } else {
-            self.s[ES] = 0;
-            self.r[DI] = 0;
         }
         self.set_disk_status(drive, 0);
         self.set_flag(CF, false);
@@ -577,11 +599,12 @@ impl Core {
             self.set_bios_disk_result(DISK_DRIVE_NOT_READY, 0);
             return;
         };
-        self.r[AX] = if drive == HARD_DISK_DRIVE {
-            FIXED_DISK_TYPE as u16
+        let disk_type = if drive == HARD_DISK_DRIVE {
+            FIXED_DISK_TYPE
         } else {
-            DISKETTE_TYPE as u16
+            DISKETTE_TYPE
         };
+        self.r[AX] = ((disk_type as u16) << BYTE_BITS) | (self.r[AX] & ACCUMULATOR_LOW_BYTE_MASK);
         if drive == HARD_DISK_DRIVE {
             let sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
             self.r[CX] = (sectors >> WORD_BITS) as u16;
@@ -589,6 +612,37 @@ impl Core {
         }
         self.set_disk_status(drive, 0);
         self.set_flag(CF, false);
+    }
+
+    fn bios_verify_sectors(&mut self, drive: u8) {
+        let Some((cylinders, heads, sectors_per_track)) = self.disk_geometry(drive) else {
+            self.set_disk_status(drive, DISK_DRIVE_NOT_READY);
+            self.set_bios_disk_result(DISK_DRIVE_NOT_READY, 0);
+            return;
+        };
+        let cx = self.r[CX];
+        let cylinder = ((cx >> BYTE_BITS) & BYTE_MASK) | ((cx & 0xc0) << 2);
+        let sector = cx & 0x3f;
+        let head = self.r[DX] >> BYTE_BITS;
+        let count = self.r[AX] as u8;
+        let first_lba = (cylinder as u32 * heads as u32 + head as u32) * sectors_per_track as u32
+            + sector.saturating_sub(1) as u32;
+        let total_sectors = cylinders as u32 * heads as u32 * sectors_per_track as u32;
+        // Image-backed sectors have no physical ECC errors. Verify the range
+        // without transferring data into ES:BX (FORMAT commonly sets it to 0).
+        let status = if count == 0 || sector == 0 {
+            DISK_INVALID_COMMAND
+        } else if cylinder >= cylinders
+            || head >= heads
+            || sector > sectors_per_track
+            || first_lba + count as u32 > total_sectors
+        {
+            DISK_SECTOR_NOT_FOUND
+        } else {
+            0
+        };
+        self.set_disk_status(drive, status);
+        self.set_bios_disk_result(status, if status == 0 { count } else { 0 });
     }
 
     fn disk_geometry(&self, drive: u8) -> Option<(u16, u16, u16)> {
@@ -638,8 +692,15 @@ impl Core {
     }
 
     fn bios_bootstrap(&mut self) {
-        let loaded = unsafe { host_disk_read(0, 0, 0, 1, 1, 0x7c00) };
-        if loaded == 0 {
+        let mut drive = FLOPPY_DRIVE;
+        let mut loaded =
+            unsafe { host_disk_read(drive as i32, 0, 0, 1, 1, BOOT_SECTOR_ADDRESS as i32) };
+        if loaded == 0 || self.rd16(BOOT_SECTOR_ADDRESS + BOOT_SIGNATURE_OFFSET) != BOOT_SIGNATURE {
+            drive = HARD_DISK_DRIVE;
+            loaded =
+                unsafe { host_disk_read(drive as i32, 0, 0, 1, 1, BOOT_SECTOR_ADDRESS as i32) };
+        }
+        if loaded == 0 || self.rd16(BOOT_SECTOR_ADDRESS + BOOT_SIGNATURE_OFFSET) != BOOT_SIGNATURE {
             self.set_bios_disk_result(DISK_DRIVE_NOT_READY, 0);
             self.halted = 1;
             return;
@@ -647,9 +708,9 @@ impl Core {
         self.r = [0; REGISTER_COUNT];
         self.s = [0; SEGMENT_REGISTER_COUNT];
         self.s[SS] = 0;
-        self.r[SP] = 0x7c00;
-        self.r[DX] = 0;
-        self.ip = 0x7c00;
+        self.r[SP] = BOOT_SECTOR_ADDRESS as u16;
+        self.r[DX] = drive as u16;
+        self.ip = BOOT_SECTOR_ADDRESS as u16;
         self.flags = IF;
         self.halted = 0;
         self.exited = 0;

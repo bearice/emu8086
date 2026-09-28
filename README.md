@@ -55,15 +55,27 @@ equipment services. The supplied MS-DOS 5.0 image is a 1.44 MB FAT12 floppy (80 
 2 heads, 18 sectors per track). A blank fixed disk is attached as drive `80h` (C:) using
 615 cylinders, 4 heads, and 17 sectors per track (41,820 sectors; 21,411,840 bytes). DOS `FDISK`
 is verified to reach its fixed-disk menu and report drive 1 with no partitions on a fresh disk.
-Partition creation and `FORMAT` have not been verified yet.
+MS-DOS Setup is also verified to create an active FAT16 partition, reboot, format C:, and
+install the supplied disk's files. For a command-line startup, choose **Do not run MS-DOS Shell
+on startup** in Setup. At the completion screen, choose **Eject floppy** and press Enter;
+the machine restarts from the installed hard disk and reaches `C:\>`.
 
 Use **Open hard disk image** to attach a raw image with exactly that size and geometry. Disk writes
 stay in memory until **Save floppy image** or **Save hard disk image** downloads the changed image;
-the bundled floppy asset is cloned before guest writes. In this boot mode, `INT 20h` and `INT 21h`
+the bundled floppy asset is cloned before guest writes. Choose **Boot hard disk** to boot an
+attached installed image directly. The headless checks cover C: directory listing, file writing,
+read-back, and booting the saved image with the written file intact. In this boot mode, `INT 20h` and `INT 21h`
 are dispatched through the guest's interrupt vector table so DOS provides those services itself.
 The machine also models the PPI/keyboard status ports (`61h`/`64h`) and VGA retrace status ports
 (`3BAh`/`3DAh`) used during this image's startup checks. Floppy and hard-disk data currently go
 through BIOS services; FDC/DMA port emulation is not included.
+
+Most BIOS software interrupts are currently dispatched directly by the Rust core before the
+IVT lookup. The ROM entry stubs support calls that chain to the original BIOS, including the
+default INT 15h keyboard-intercept handler and the warm-reset entry at `FFFF:0000`.
+This is a synthetic BIOS; general guest hooks on intercepted BIOS interrupts are not fully
+honored yet. BIOS disk services include CHS read/write and verify, geometry, and disk type;
+verify checks image bounds without transferring data into guest memory.
 
 ## Debugger
 

@@ -8,6 +8,10 @@ export const LOAD_SEG = 0x0100;
 const FLOPPY_BOOT_ADDR = 0x7c00;
 const BIOS_SEG = 0xf000;
 const BIOS_DPT_OFFSET = 0x0200;
+const BIOS_KEYBOARD_INTERCEPT_OFFSET = 0x0120;
+const BIOS_RESET_VECTOR_ADDR = 0xffff0;
+const KEYBOARD_CONTROLLER_COMMAND_PORT = 0x64;
+const KEYBOARD_CONTROLLER_RESET_COMMAND = 0xfe;
 
 export class Machine {
   constructor() {
@@ -15,9 +19,11 @@ export class Machine {
     this.port61Latch = 0;
     this.refreshToggle = false;
     this.vgaRetraceToggle = false;
+    this.resetRequested = false;
     this.floppyImage = null;
     this.floppy = null;
     this.floppyDisk = null;
+    this.bootDrive = null;
     this.hardDisk = null;
     this.hardDiskAttached = false;
     this.hardDiskName = 'harddisk.img';
@@ -98,6 +104,8 @@ export class Machine {
 
   writePort(port, value) {
     if (port === 0x61) this.port61Latch = value & 0xef;
+    if (port === KEYBOARD_CONTROLLER_COMMAND_PORT && value === KEYBOARD_CONTROLLER_RESET_COMMAND
+        && this.bootDrive !== null) this.resetRequested = true;
   }
 
   get diskDirty() { return this.floppyDisk?.dirty ?? false; }
@@ -137,12 +145,33 @@ export class Machine {
   }
 
   bootFromFloppy() {
+    this.bootFromDisk(0);
+  }
+
+  ejectFloppy() {
+    this.floppyImage = null;
+    this.floppyDisk = null;
+  }
+
+  bootHardDisk() {
+    if (!this.hardDisk) throw new Error('no hard disk image is attached');
+    this.hardDiskAttached = true;
+    this.bootFromDisk(0x80);
+    return this.hardDisk.geometry;
+  }
+
+  bootFromDisk(drive) {
+    const disk = this.diskFor(drive);
+    if (!disk) throw new Error('no boot image is inserted');
+    if (disk.bytes[510] !== 0x55 || disk.bytes[511] !== 0xaa) {
+      throw new Error('disk has no boot signature');
+    }
     const cpu = this.cpu;
     const geometry = this.floppy;
     cpu.reset();
     cpu.mem.fill(0);
     cpu.setDosCompatMode(false);
-    cpu.setFloppyGeometry(geometry.cylinders, geometry.heads, geometry.sectorsPerTrack);
+    cpu.setFloppyGeometry(geometry?.cylinders ?? 0, geometry?.heads ?? 0, geometry?.sectorsPerTrack ?? 0);
     cpu.setHardDiskGeometry(
       HARD_DISK_GEOMETRY.cylinders,
       HARD_DISK_GEOMETRY.heads,
@@ -151,11 +180,14 @@ export class Machine {
     this.port61Latch = 0;
     this.refreshToggle = false;
     this.vgaRetraceToggle = false;
+    this.resetRequested = false;
+    this.bootDrive = drive;
+    this.loaded = null;
     this.installBiosState();
-    cpu.mem.set(this.floppyImage.subarray(0, SECTOR_BYTES), FLOPPY_BOOT_ADDR);
+    cpu.mem.set(disk.bytes.subarray(0, SECTOR_BYTES), FLOPPY_BOOT_ADDR);
     cpu.s[S.CS] = cpu.s[S.DS] = cpu.s[S.ES] = cpu.s[S.SS] = 0;
     cpu.r[R.SP] = FLOPPY_BOOT_ADDR;
-    cpu.r[R.DX] = 0;
+    cpu.r[R.DX] = drive;
     cpu.ip = FLOPPY_BOOT_ADDR;
     this.kbd.length = 0;
     this.clear();
@@ -167,7 +199,7 @@ export class Machine {
     const write16 = (addr, value) => cpu.wr16(addr, value);
 
     // BIOS Data Area values used by DOS and text-mode programs.
-    write16(0x410, 0x0021); // one floppy drive, 80-column color display
+    write16(0x410, this.floppy ? 0x0021 : 0x0020); // 80-column color display, optional floppy drive
     write16(0x413, 640);
     mem[0x449] = 3;
     write16(0x44a, COLS);
@@ -197,6 +229,25 @@ export class Machine {
       write16(vector * 4, offset);
       write16(vector * 4 + 2, BIOS_SEG);
     }
+
+    // DOS chains its INT 15h keyboard hook to this default handler. Set carry
+    // in the saved interrupt flags so IRET permits the original scan code.
+    mem.set([
+      0x55,             // PUSH BP
+      0x89, 0xe5,       // MOV BP, SP
+      0x83, 0x4e, 0x06, 0x01, // OR WORD [BP+6], 1
+      0x5d, 0xcf,       // POP BP; IRET
+    ], (BIOS_SEG << 4) + BIOS_KEYBOARD_INTERCEPT_OFFSET);
+    write16(0x15 * 4, BIOS_KEYBOARD_INTERCEPT_OFFSET);
+    write16(0x15 * 4 + 2, BIOS_SEG);
+
+    // A guest warm boot jumps to FFFF:0000. Reuse the 8042 reset request,
+    // which the Machine consumes after CPU execution returns to the host.
+    mem.set([
+      0xb0, KEYBOARD_CONTROLLER_RESET_COMMAND, // MOV AL, FEh
+      0xe6, KEYBOARD_CONTROLLER_COMMAND_PORT,  // OUT 64h, AL
+      0xf4, // HLT if no machine handles the reset
+    ], BIOS_RESET_VECTOR_ADDR);
   }
 
   diskFor(drive) {
@@ -240,17 +291,23 @@ export class Machine {
     this.floppyImage = null;
     this.floppy = null;
     this.floppyDisk = null;
+    this.bootDrive = null;
     this.hardDiskAttached = false;
     this.loaded = { bytes, origin };
   }
 
   reload() {
-    if (this.floppyImage) this.bootFromFloppy();
+    if (this.bootDrive === 0x80 || (this.bootDrive === 0 && !this.floppyDisk)) this.bootHardDisk();
+    else if (this.floppyImage) this.bootFromFloppy();
     else if (this.loaded) this.load(this.loaded.bytes, this.loaded.origin);
   }
 
   step() {
     const ok = this.cpu.step();
+    if (this.resetRequested) {
+      this.bootFromDisk(this.floppyDisk ? 0 : 0x80);
+      return true;
+    }
     return ok;
   }
 
@@ -270,6 +327,10 @@ export class Machine {
       if (cpu.halted) return 'halted';
       const status = cpu.run(remaining);
       remaining -= cpu.lastRunCount;
+      if (this.resetRequested) {
+        this.bootFromDisk(this.floppyDisk ? 0 : 0x80);
+        continue;
+      }
       if (status === 1) return 'halted';
       if (status === 2) return 'input';
       if (status === 3) return 'breakpoint';
