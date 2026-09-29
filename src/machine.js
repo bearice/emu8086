@@ -10,6 +10,16 @@ export const VRAM = 0xb8000;
 export const COLS = 80, ROWS = 25;
 export const LOAD_SEG = 0x0100;
 const FLOPPY_BOOT_ADDR = 0x7c00;
+const BIOS_SHIFT_FLAGS_ADDRESS = 0x417;
+const BIOS_MODIFIER_FLAGS_MASK = 0x0f;
+const BIOS_MODIFIER_FLAGS = {
+  ShiftRight: 0x01,
+  ShiftLeft: 0x02,
+  ControlLeft: 0x04,
+  ControlRight: 0x04,
+  AltLeft: 0x08,
+  AltRight: 0x08,
+};
 
 export class Machine {
   constructor() {
@@ -18,6 +28,7 @@ export class Machine {
     this.refreshToggle = false;
     this.vgaRetraceToggle = false;
     this.resetRequested = false;
+    this.pressedModifiers = new Set();
     this.floppyImage = null;
     this.floppy = null;
     this.floppyDisk = null;
@@ -87,6 +98,28 @@ export class Machine {
   }
 
   keyPress(code, scan = 0) { this.kbd.push(((scan & 0xff) << 8) | (code & 0xff)); }
+
+  setModifierPressed(code, pressed) {
+    const flag = BIOS_MODIFIER_FLAGS[code];
+    if (flag === undefined) return false;
+    if (pressed) this.pressedModifiers.add(code);
+    else this.pressedModifiers.delete(code);
+
+    let modifierFlags = 0;
+    for (const pressedCode of this.pressedModifiers) {
+      modifierFlags |= BIOS_MODIFIER_FLAGS[pressedCode];
+    }
+    const shiftFlags = this.cpu.rd8(BIOS_SHIFT_FLAGS_ADDRESS);
+    this.cpu.wr8(BIOS_SHIFT_FLAGS_ADDRESS,
+      (shiftFlags & ~BIOS_MODIFIER_FLAGS_MASK) | modifierFlags);
+    return true;
+  }
+
+  clearKeyboardModifiers() {
+    this.pressedModifiers.clear();
+    const shiftFlags = this.cpu.rd8(BIOS_SHIFT_FLAGS_ADDRESS);
+    this.cpu.wr8(BIOS_SHIFT_FLAGS_ADDRESS, shiftFlags & ~BIOS_MODIFIER_FLAGS_MASK);
+  }
 
   readPort(port) {
     if (port === 0x61) {

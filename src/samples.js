@@ -176,4 +176,97 @@ done:   mov ax, 4C00h
 text:   db '8086 EMULATOR', 0
 `,
   },
+  {
+    name: 'Keyboard scancode probe',
+    code: `; Show BIOS keyboard scan/ASCII bytes and live Shift/Ctrl/Alt flags.
+        org 100h
+
+start:  mov dx, heading
+        mov ah, 09h
+        int 21h
+        mov byte [last_modifiers], 0FFh
+
+poll:   mov ah, 02h          ; BIOS: read keyboard shift flags
+        int 16h
+        and al, 0Fh           ; bits 0-3 = RShift, LShift, Ctrl, Alt
+        cmp al, [last_modifiers]
+        je  check_key
+        mov [last_modifiers], al
+        mov dx, modifier_label
+        mov ah, 09h
+        int 21h
+        mov al, [last_modifiers]
+        call print_hex_byte
+        mov dx, newline
+        mov ah, 09h
+        int 21h
+
+check_key:
+        mov ah, 01h          ; BIOS: check for a queued key
+        int 16h
+        jz  poll
+        mov ah, 00h          ; BIOS: read AX = scan code:ASCII
+        int 16h
+        mov [key_ascii], al
+        mov [key_scan], ah
+        mov dx, scan_label
+        mov ah, 09h
+        int 21h
+        mov al, [key_scan]
+        call print_hex_byte
+        mov dx, ascii_label
+        mov ah, 09h
+        int 21h
+        mov al, [key_ascii]
+        call print_hex_byte
+        mov dl, 0Dh
+        mov ah, 02h
+        int 21h
+        mov dl, 0Ah
+        mov ah, 02h
+        int 21h
+        cmp byte [key_ascii], 1Bh ; ESC quits
+        jne poll
+        mov ax, 4C00h
+        int 21h
+
+; AL contains a byte; print two uppercase hexadecimal digits.
+print_hex_byte:
+        push ax
+        push bx
+        mov bl, al
+        mov al, bl
+        mov cl, 4
+        shr al, cl
+        call print_hex_digit
+        mov al, bl
+        and al, 0Fh
+        call print_hex_digit
+        pop bx
+        pop ax
+        ret
+
+print_hex_digit:
+        cmp al, 10
+        jb  print_decimal_digit
+        add al, 'A'-10
+        jmp short emit_digit
+print_decimal_digit:
+        add al, '0'
+emit_digit:
+        mov dl, al
+        mov ah, 02h
+        int 21h
+        ret
+
+heading:    db 'Type keys: scan/ASCII. mod bits: 0=RShift 1=LShift 2=Ctrl 3=Alt.', 0Dh, 0Ah, '$'
+modifier_label: db 'mods=$'
+newline:    db 0Dh, 0Ah, '$'
+scan_label: db 'scan=$'
+ascii_label: db ' ascii=$'
+last_modifiers: db 0FFh
+key_scan:   db 0
+key_ascii:  db 0
+`,
+  },
 ];

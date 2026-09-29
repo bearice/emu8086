@@ -164,16 +164,29 @@ function cp437(c) {
     '►', '◄', '↕', '‼', '¶', '§', '▬', '↨', '↑', '↓', '→', '←', '∟', '↔', '▲', '▼'][c] || ' ';
 }
 
+const PC_MODIFIER_CODES = new Set(['ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight']);
+const GENERIC_MODIFIER_CODES = { Shift: 'ShiftLeft', Control: 'ControlLeft', Alt: 'AltLeft' };
+
+function keyboardModifierCode(e) {
+  return PC_MODIFIER_CODES.has(e.code) ? e.code : (GENERIC_MODIFIER_CODES[e.key] || e.code);
+}
+
 canvas.addEventListener('keydown', (e) => {
-  if (e.metaKey || e.ctrlKey) return;
+  const modifierCode = keyboardModifierCode(e);
+  if (machine.setModifierPressed(modifierCode, true)) {
+    if (modifierCode === 'AltLeft' || modifierCode === 'AltRight') e.preventDefault();
+    return;
+  }
+  if (e.metaKey) return;
   let c = -1;
-  if (e.key.length === 1) c = e.key.charCodeAt(0);
+  if (e.ctrlKey && /^[a-z]$/i.test(e.key)) c = e.key.toLowerCase().charCodeAt(0) - 96;
+  else if (!e.ctrlKey && e.key.length === 1) c = e.key.charCodeAt(0);
   else if (e.key === 'Enter') c = 13;
   else if (e.key === 'Backspace') c = 8;
   else if (e.key === 'Tab') c = 9;
   else if (e.key === 'Escape') c = 27;
   const scans = {
-    Enter: 0x1c, Backspace: 0x0e, Tab: 0x0f, Escape: 0x01,
+    Enter: 0x1c, Backspace: 0x0e, Tab: 0x0f, Escape: 0x01, ' ': 0x39,
     ArrowUp: 0x48, ArrowDown: 0x50, ArrowLeft: 0x4b, ArrowRight: 0x4d,
     Home: 0x47, End: 0x4f, PageUp: 0x49, PageDown: 0x51, Insert: 0x52, Delete: 0x53,
     F1: 0x3b, F2: 0x3c, F3: 0x3d, F4: 0x3e, F5: 0x3f, F6: 0x40,
@@ -184,12 +197,24 @@ canvas.addEventListener('keydown', (e) => {
     '1': 0x02, '2': 0x03, '3': 0x04, '4': 0x05, '5': 0x06, '6': 0x07,
     '7': 0x08, '8': 0x09, '9': 0x0a, '0': 0x0b,
   };
+  if (e.ctrlKey && c < 0 && scans[e.key] === undefined) {
+    e.preventDefault();
+    return;
+  }
   if (c >= 0 || scans[e.key]) {
     e.preventDefault();
     machine.keyPress(c < 0 ? 0 : c, scans[e.key.toLowerCase()] || scans[e.key] || 0);
     if (!running && cpu.waiting) { running = true; setStatus('running'); }
   }
 });
+document.addEventListener('keyup', (e) => {
+  const modifierCode = keyboardModifierCode(e);
+  if (machine.setModifierPressed(modifierCode, false)
+      && (modifierCode === 'AltLeft' || modifierCode === 'AltRight')) {
+    e.preventDefault();
+  }
+}, true);
+window.addEventListener('blur', () => machine.clearKeyboardModifiers());
 
 // ---------- registers ----------
 const REGNAMES = ['AX', 'CX', 'DX', 'BX', 'SP', 'BP', 'SI', 'DI'];
