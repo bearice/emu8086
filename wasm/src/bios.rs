@@ -6,6 +6,12 @@ const BIOS_SYSTEM_CONFIGURATION_TABLE_OFFSET: u16 = 0x0210;
 const BOOT_SECTOR_ADDRESS: u32 = 0x7c00;
 const BOOT_SIGNATURE_OFFSET: u32 = 510;
 const BOOT_SIGNATURE: u16 = 0xaa55;
+const BIOS_TICKS_PER_DAY: u32 = 0x0018_00b0;
+const BIOS_FORMAT_BUFFER_OFFSET: u16 = 0x0300;
+const DISK_SECTOR_BYTES: u32 = 512;
+const DISK_FORMAT_FIELD_BYTES: u16 = 4;
+const DISK_FORMAT_SIZE_512: u8 = 2;
+const DISKETTE_PARAMETER_TABLE_FILL_OFFSET: u16 = 8;
 
 pub(crate) const INT_BIOS_EQUIPMENT: u8 = 0x11;
 pub(crate) const INT_BIOS_SYSTEM: u8 = 0x15;
@@ -17,6 +23,7 @@ pub(crate) const INT_BIOS_DISK: u8 = 0x13;
 pub(crate) const INT_BIOS_MEMORY_SIZE: u8 = 0x12;
 pub(crate) const INT_BIOS_KEYBOARD: u8 = 0x16;
 pub(crate) const INT_BIOS_BOOTSTRAP: u8 = 0x19;
+pub(crate) const INT_BIOS_TIMER: u8 = 0x08;
 
 const BIOS_GET_SYSTEM_CONFIGURATION: u8 = 0xc0;
 const BIOS_SYSTEM_CONFIGURATION_TABLE_LENGTH: u8 = 8;
@@ -25,6 +32,7 @@ const BIOS_SYSTEM_CONFIGURATION_SUBMODEL: u8 = 0;
 const BIOS_REVISION: u8 = 0;
 const BIOS_FUNCTION_UNSUPPORTED_STATUS: u8 = 0x86;
 const BIOS_KEYBOARD_INTERCEPT: u8 = 0x4f;
+const BIOS_GET_EXTENDED_MEMORY_SIZE: u8 = 0x88;
 
 const SERIAL_INITIALIZE: u8 = 0x00;
 const SERIAL_TRANSMIT: u8 = 0x01;
@@ -38,10 +46,12 @@ const PARALLEL_GET_STATUS: u8 = 0x02;
 const PARALLEL_NO_DEVICE_STATUS: u8 = 0x90;
 
 const TIME_READ_CLOCK: u8 = 0x00;
+const TIME_SET_CLOCK: u8 = 0x01;
 const TIME_READ_RTC_TIME: u8 = 0x02;
 const TIME_READ_RTC_DATE: u8 = 0x04;
 
 const VIDEO_SET_MODE: u8 = 0x00;
+const VIDEO_SET_CURSOR_SHAPE: u8 = 0x01;
 const VIDEO_SET_ACTIVE_PAGE: u8 = 0x05;
 const VIDEO_SCROLL_UP: u8 = 0x06;
 const VIDEO_SCROLL_DOWN: u8 = 0x07;
@@ -62,12 +72,14 @@ const KEYBOARD_READ: u8 = 0x00;
 const KEYBOARD_READ_EXTENDED: u8 = 0x10;
 const KEYBOARD_CHECK: u8 = 0x01;
 const KEYBOARD_CHECK_EXTENDED: u8 = 0x11;
+const KEYBOARD_GET_SHIFT_FLAGS: u8 = 0x02;
 
 const DISK_RESET: u8 = 0x00;
 const DISK_GET_STATUS: u8 = 0x01;
 const DISK_READ_SECTORS: u8 = 0x02;
 const DISK_WRITE_SECTORS: u8 = 0x03;
 const DISK_VERIFY_SECTORS: u8 = 0x04;
+const DISK_FORMAT_TRACK: u8 = 0x05;
 const DISK_GET_PARAMETERS: u8 = 0x08;
 const DISK_GET_TYPE: u8 = 0x15;
 const FLOPPY_DRIVE: u8 = 0x00;
@@ -108,6 +120,10 @@ impl Core {
 
     pub(crate) fn bios_service(&mut self, n: u8) -> bool {
         match n {
+            INT_BIOS_TIMER => {
+                self.bios_timer();
+                true
+            }
             INT_BIOS_EQUIPMENT => {
                 self.r[AX] = if self.floppy_cylinders == 0 {
                     0x0020
@@ -147,13 +163,34 @@ impl Core {
         }
     }
 
+    fn bios_timer(&mut self) {
+        let ticks = self.rd16(0x46c) as u32 | ((self.rd16(0x46e) as u32) << WORD_BITS);
+        let next_ticks = ticks.wrapping_add(1);
+        if next_ticks >= BIOS_TICKS_PER_DAY {
+            self.wr16(0x46c, 0);
+            self.wr16(0x46e, 0);
+            self.wr8(0x470, 1);
+        } else {
+            self.wr16(0x46c, next_ticks as u16);
+            self.wr16(0x46e, (next_ticks >> WORD_BITS) as u16);
+        }
+    }
+
     fn bios_system(&mut self) -> bool {
-        if (self.r[AX] >> BYTE_BITS) as u8 == BIOS_KEYBOARD_INTERCEPT {
+        let function = (self.r[AX] >> BYTE_BITS) as u8;
+        if function == BIOS_KEYBOARD_INTERCEPT {
             self.set_flag(CF, true);
             return true;
         }
 
-        if (self.r[AX] >> BYTE_BITS) as u8 != BIOS_GET_SYSTEM_CONFIGURATION {
+        if function == BIOS_GET_EXTENDED_MEMORY_SIZE {
+            // The modeled AT exposes no memory above the 1 MiB address space.
+            self.r[AX] = 0;
+            self.set_flag(CF, false);
+            return true;
+        }
+
+        if function != BIOS_GET_SYSTEM_CONFIGURATION {
             self.r[AX] = ((BIOS_FUNCTION_UNSUPPORTED_STATUS as u16) << BYTE_BITS)
                 | (self.r[AX] & ACCUMULATOR_LOW_BYTE_MASK);
             self.set_flag(CF, true);
@@ -221,6 +258,13 @@ impl Core {
                 self.set_flag(CF, false);
                 true
             }
+            TIME_SET_CLOCK => {
+                self.wr16(0x46c, self.r[DX]);
+                self.wr16(0x46e, self.r[CX]);
+                self.wr8(0x470, 0);
+                self.set_flag(CF, false);
+                true
+            }
             TIME_READ_RTC_TIME => {
                 self.r[CX] =
                     ((Self::to_bcd(hour) as u16) << BYTE_BITS) | Self::to_bcd(minute) as u16;
@@ -260,6 +304,7 @@ impl Core {
                 self.wr8(0x462, 0);
                 self.clear_video_page(0, 0x07);
             }
+            VIDEO_SET_CURSOR_SHAPE => self.wr16(0x460, self.r[CX]),
             VIDEO_SET_CURSOR => {
                 let requested = self.r[DX];
                 let row = ((requested >> 8) as u32).min(TEXT_ROWS - 1);
@@ -273,7 +318,7 @@ impl Core {
                 self.r[DX] = cursor;
                 self.r[BX] = ((page as u16) << 8) | (self.r[BX] & 0xff);
             }
-            VIDEO_SET_ACTIVE_PAGE => self.wr8(0x462, page),
+            VIDEO_SET_ACTIVE_PAGE => self.wr8(0x462, al & (TEXT_PAGE_COUNT - 1)),
             VIDEO_SCROLL_UP | VIDEO_SCROLL_DOWN => self.bios_scroll(al, ah == VIDEO_SCROLL_UP),
             VIDEO_READ_CHAR_ATTRIBUTE => {
                 let cursor = self.rd16(0x450 + page as u32 * 2);
@@ -446,6 +491,10 @@ impl Core {
                 }
                 true
             }
+            KEYBOARD_GET_SHIFT_FLAGS => {
+                self.r[AX] = (self.r[AX] & ACCUMULATOR_HIGH_BYTE_MASK) | self.rd8(0x417) as u16;
+                true
+            }
             _ => true,
         }
     }
@@ -514,11 +563,99 @@ impl Core {
                 self.set_disk_status(drive, status);
                 self.set_bios_disk_result(status, if status == 0 { count as u8 } else { 0 });
             }
+            DISK_FORMAT_TRACK => self.bios_format_track(drive),
             DISK_GET_PARAMETERS => self.bios_disk_parameters(),
             DISK_VERIFY_SECTORS => self.bios_verify_sectors(drive),
             DISK_GET_TYPE => self.bios_disk_type(drive),
             _ => self.set_bios_disk_result(DISK_INVALID_COMMAND, 0),
         }
+    }
+
+    fn bios_format_track(&mut self, drive: u8) {
+        let Some((cylinders, heads, sectors_per_track)) = self.disk_geometry(drive) else {
+            self.set_disk_status(drive, DISK_DRIVE_NOT_READY);
+            self.set_bios_disk_result(DISK_DRIVE_NOT_READY, 0);
+            return;
+        };
+
+        let count = self.r[AX] as u8;
+        let cx = self.r[CX];
+        let cylinder = ((cx >> BYTE_BITS) & 0xff) | (((cx as u8 as u16) & 0xc0) << 2);
+        let head = (self.r[DX] >> BYTE_BITS) as u8;
+        if count == 0
+            || count as u16 > sectors_per_track
+            || count > 63
+            || cylinder >= cylinders
+            || head as u16 >= heads
+            || cylinder > u8::MAX as u16
+        {
+            self.set_disk_status(drive, DISK_INVALID_COMMAND);
+            self.set_bios_disk_result(DISK_INVALID_COMMAND, 0);
+            return;
+        }
+
+        let mut seen_sectors = 0u64;
+        for index in 0..count as u16 {
+            let offset = self.r[BX].wrapping_add(index * DISK_FORMAT_FIELD_BYTES);
+            let field_cylinder = self.rd_seg8(self.s[ES], offset) as u16;
+            let field_head = self.rd_seg8(self.s[ES], offset.wrapping_add(1)) as u16;
+            let sector = self.rd_seg8(self.s[ES], offset.wrapping_add(2));
+            let size = self.rd_seg8(self.s[ES], offset.wrapping_add(3));
+            if field_cylinder != cylinder
+                || field_head != head as u16
+                || sector == 0
+                || sector as u16 > sectors_per_track
+                || size != DISK_FORMAT_SIZE_512
+            {
+                self.set_disk_status(drive, DISK_INVALID_COMMAND);
+                self.set_bios_disk_result(DISK_INVALID_COMMAND, 0);
+                return;
+            }
+            let sector_bit = 1u64 << (sector - 1);
+            if seen_sectors & sector_bit != 0 {
+                self.set_disk_status(drive, DISK_INVALID_COMMAND);
+                self.set_bios_disk_result(DISK_INVALID_COMMAND, 0);
+                return;
+            }
+            seen_sectors |= sector_bit;
+        }
+
+        let parameter_offset = self.rd16(0x1e * 4);
+        let parameter_segment = self.rd16(0x1e * 4 + 2);
+        let fill = self.rd_seg8(
+            parameter_segment,
+            parameter_offset.wrapping_add(DISKETTE_PARAMETER_TABLE_FILL_OFFSET),
+        );
+        let format_buffer = Self::phys(BIOS_ROM_SEGMENT, BIOS_FORMAT_BUFFER_OFFSET);
+        for byte in 0..DISK_SECTOR_BYTES {
+            self.wr8(format_buffer + byte, fill);
+        }
+
+        for index in 0..count as u16 {
+            let offset = self.r[BX].wrapping_add(index * DISK_FORMAT_FIELD_BYTES);
+            let field_cylinder = self.rd_seg8(self.s[ES], offset) as i32;
+            let field_head = self.rd_seg8(self.s[ES], offset.wrapping_add(1)) as i32;
+            let sector = self.rd_seg8(self.s[ES], offset.wrapping_add(2)) as i32;
+            let ok = unsafe {
+                host_disk_write(
+                    drive as i32,
+                    field_cylinder,
+                    field_head,
+                    sector,
+                    1,
+                    format_buffer as i32,
+                )
+            };
+            if ok == 0 {
+                self.set_disk_status(drive, DISK_SECTOR_NOT_FOUND);
+                self.set_bios_disk_result(DISK_SECTOR_NOT_FOUND, 0);
+                return;
+            }
+        }
+
+        self.set_disk_status(drive, 0);
+        self.r[AX] &= ACCUMULATOR_LOW_BYTE_MASK;
+        self.set_flag(CF, false);
     }
 
     fn bios_disk_parameters(&mut self) {
@@ -545,8 +682,11 @@ impl Core {
 
     fn bios_disk_type(&mut self, drive: u8) {
         let Some((cylinders, heads, sectors_per_track)) = self.disk_geometry(drive) else {
-            self.set_disk_status(drive, DISK_DRIVE_NOT_READY);
-            self.set_bios_disk_result(DISK_DRIVE_NOT_READY, 0);
+            // AH=15h uses AH=00h for an absent drive; CF reports an invalid
+            // drive number rather than a failed read operation.
+            self.set_disk_status(drive, 0);
+            self.r[AX] &= ACCUMULATOR_LOW_BYTE_MASK;
+            self.set_flag(CF, false);
             return;
         };
         let disk_type = if drive == HARD_DISK_DRIVE {

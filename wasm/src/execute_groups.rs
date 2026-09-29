@@ -229,12 +229,20 @@ impl Core {
                     let num = ((((self.r[DX] as u32) << 16) | self.r[AX] as u32) as i32) as i64;
                     let q = num / d;
                     let rem = num % d;
+                    if q < i16::MIN as i64 || q > i16::MAX as i64 {
+                        self.interrupt(INTERRUPT_DIVIDE_ERROR);
+                        return;
+                    }
                     self.r[AX] = q as u16;
                     self.r[DX] = rem as u16;
                 } else {
                     let num = self.r[AX] as i16 as i64;
                     let q = num / d;
                     let rem = num % d;
+                    if q < i8::MIN as i64 || q > i8::MAX as i64 {
+                        self.interrupt(INTERRUPT_DIVIDE_ERROR);
+                        return;
+                    }
                     self.r[AX] =
                         (q as u8 as u16) | ((rem as u8 as u16) << LITTLE_ENDIAN_HIGH_BYTE_SHIFT);
                 }

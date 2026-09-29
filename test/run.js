@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { verifyMsDosInstallation } from './msdos-install.js';
 import { installFirmwareVectors } from '../src/firmware.js';
 import { verifyInterruptDispatch } from './interrupts.js';
+import { runSpecSuites } from './spec.js';
 
 await initializeCPU(await readFile(new URL('../src/wasm/kernel.wasm', import.meta.url)));
 
@@ -591,6 +592,9 @@ verifyInterruptDispatch(check);
   verifyMsDosInstallation(check, image);
   check('msdos5 disk writes do not mutate source asset', image.every((value, index) => value === originalImage[index]), true);
 }
+
+// Standards conformance suites (8086 CPU arithmetic + PC BIOS services).
+runSpecSuites(check);
 
 console.log(fail ? `\n${fail} failing` : '\nall green');
 process.exit(fail ? 1 : 0);

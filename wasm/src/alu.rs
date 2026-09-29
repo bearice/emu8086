@@ -113,11 +113,14 @@ impl Core {
         } else {
             BYTE_SIGN_BIT_U32
         };
-        let count = count & SHIFT_COUNT_MASK;
+        // The 8086 consumes the full CL byte. Masking to five bits is a 286+
+        // behavior and changes counts such as 32 into a no-op.
         if count == 0 {
             return value;
         }
         let mut v = value as u32 & mask;
+        let original_value = v;
+        let original_carry = self.flag(CF);
         for _ in 0..count {
             match op {
                 SHIFT_ROL => {
@@ -163,18 +166,18 @@ impl Core {
                 }
             }
         }
-        let c = self.flag(CF);
-        if op <= SHIFT_RCR {
-            self.set_flag(OF, (v & sign != 0) ^ c);
-        } else {
-            self.set_flag(
-                OF,
-                if op == SHIFT_SAR {
-                    false
-                } else {
-                    (v & sign != 0) ^ c
-                },
-            );
+        if count == 1 {
+            let overflow = match op {
+                SHIFT_ROL | SHIFT_RCL | SHIFT_SHL | SHIFT_SAL => (v & sign != 0) ^ self.flag(CF),
+                SHIFT_ROR => (original_value & sign != 0) ^ (original_value & 1 != 0),
+                SHIFT_RCR => (original_value & sign != 0) ^ original_carry,
+                SHIFT_SHR => original_value & sign != 0,
+                SHIFT_SAR => false,
+                _ => false,
+            };
+            self.set_flag(OF, overflow);
+        }
+        if op > SHIFT_RCR {
             if wide {
                 self.szp16(v as u16);
             } else {

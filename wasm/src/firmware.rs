@@ -26,7 +26,8 @@ impl Core {
         );
         let is_bios = matches!(
             vector,
-            INT_BIOS_VIDEO
+            INT_BIOS_TIMER
+                | INT_BIOS_VIDEO
                 | INT_BIOS_EQUIPMENT
                 | INT_BIOS_MEMORY_SIZE
                 | INT_BIOS_DISK

@@ -122,8 +122,6 @@ pub(crate) const SHIFT_SHL: u8 = 4;
 pub(crate) const SHIFT_SHR: u8 = 5;
 pub(crate) const SHIFT_SAL: u8 = 6;
 pub(crate) const SHIFT_SAR: u8 = 7;
-pub(crate) const SHIFT_COUNT_MASK: u8 = 0b1_1111;
-
 // Group 3 and group 4/5 selectors encoded in the ModR/M reg field.
 pub(crate) const GROUP3_TEST: u8 = 0;
 pub(crate) const GROUP3_TEST_ALIAS: u8 = 1;
