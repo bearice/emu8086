@@ -18,6 +18,13 @@ npm test        # CPU + assembler + disassembler smoke tests (node)
 npm run build   # static production build into dist/
 ```
 
+## Publishing to GitHub Pages
+
+Pull requests targeting `master` build the site for validation. Each push to `master`
+builds and deploys the site to [bearice.github.io/emu8086](https://bearice.github.io/emu8086/).
+To enable the first deployment, set **Settings → Pages → Build and deployment → Source**
+to **GitHub Actions** in the repository.
+
 ## Layout
 
 | file | what it is |
